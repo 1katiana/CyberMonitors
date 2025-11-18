@@ -1,0 +1,9 @@
+{
+    "ram_threshold": 99,
+    "disk_threshold": 99,
+    "cpu_threshold": 85,
+    "user_threshold": 3,
+    "process_threshold": 300,
+    "max_delay_minutes": 30
+  }
+  

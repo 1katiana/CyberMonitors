@@ -1,0 +1,12 @@
+Objet : Alerte de crise sur le serveur
+
+Bonjour,
+
+Des crises ont été détectées sur le serveur. Voici les détails :
+
+{{crises}}
+
+Veuillez prendre les mesures nécessaires dès que possible.
+
+Cordialement,
+L’équipe de surveillance du serveur
