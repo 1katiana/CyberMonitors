@@ -1,26 +1,34 @@
 services:
   # --- SERVEUR CENTRAL DE MONITORING ---
   cyber-monitor-center:
-    build: .
-    volumes:
-      - ./data:/app/data
-    networks:
+   build:
+    context: .
+    dockerfile: Dockerfile
+
+   volumes:
+     - ../../code_monitoring:/app/code_monitoring
+     - ../../Data:/app/data
+   networks:
       - monitoring-net
+   environment:
+      - PYTHONUNBUFFERED=1 
+
+   command: python /app/code_monitoring/sonde/collecteur.py
 
   # --- PARC SIMULÉ : MACHINES LINUX ---
   linux-srv-1:
-    image: python:3.9-slim
+    build: .
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-01
     volumes:
-      - ./scripts:/scripts  # <-- Le lien est ici !
+      - ./scripts:/scripts
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
 
   linux-srv-2:
-    image: python:3.9-slim
+    build: .
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-02
@@ -32,7 +40,7 @@ services:
 
   # --- PARC SIMULÉ : POSTES WINDOWS ---
   win-wkst-1:
-    image: python:3.9-slim
+    build: .
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-01
@@ -43,7 +51,7 @@ services:
     command: python /scripts/simu_agent.py
 
   win-wkst-2:
-    image: python:3.9-slim
+    build: .
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-02
@@ -55,7 +63,7 @@ services:
 
   # --- SERVEUR WINDOWS CRITIQUE (Haute Disponibilité) ---
   win-srv-indispensable:
-    image: python:3.9-slim
+    build: .
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=SRV-WIN-CORE
