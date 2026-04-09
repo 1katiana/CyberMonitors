@@ -2,62 +2,76 @@ import time
 import os
 import random
 import sys
+import threading
+from flask import Flask, jsonify
 
+# --- CONFIGURATION ET ETAT ---
 machine = os.environ.get('MACHINE_NAME', 'Inconnu')
 os_type = os.environ.get('OS_TYPE', 'Inconnu')
 
-print(f"[{machine}] ({os_type}) Démarrage de l'agent...", flush=True)
-time.sleep(random.uniform(1.0, 3.0)) 
+# On ajoute "users" dans le dictionnaire initial
+stats = {
+    "cpu": 10.0,
+    "gpu": 5.0,
+    "ram": 30.0,
+    "disk": 15.0,
+    "temp": 30.0,
+    "users": 1  # <--- Ajouté
+}
 
-# Valeurs actuelles au démarrage
-cpu_usage = 10.0
-gpu_usage = 5.0
-ram_usage = 30.0
-disk_usage = 15.0
-temp_c = 30.0
+# Valeurs de "repos"
+base_cpu, base_ram, base_disk = 10.0, 30.0, 15.0
 
-# Valeurs de "repos" (là où le système tend à retourner naturellement)
-base_cpu = 10.0
-base_ram = 30.0
-base_disk = 15.0
+def run_simulation_loop():
+    global base_cpu, base_ram, base_disk
+    print(f"[{machine}] ({os_type}) Simulation démarrée...", flush=True)
 
-while True:
-    # 1. PICS ALÉATOIRES (Les "feintes" instantanées)
-    if random.randint(1, 50) == 1:
-        cpu_usage = random.uniform(85.0, 100.0)
-        gpu_usage = random.uniform(70.0, 100.0)
-        print(f"[{machine}] ⚡ Activité : Pic CPU/GPU détecté...", flush=True)
-        
-    if random.randint(1, 70) == 1:
-        ram_usage = random.uniform(85.0, 100.0)
-        print(f"[{machine}] 💾 Activité : Allocation massive de RAM...", flush=True)
-        
-    if random.randint(1, 70) == 1:
-        disk_usage = random.uniform(85.0, 100.0)
-        print(f"[{machine}] 💽 Activité : Pic d'écriture Disque...", flush=True)
+    while True:
+        # 1. PICS ALÉATOIRES
+        if random.randint(1, 50) == 1:
+            stats["cpu"] = random.uniform(85.0, 100.0)
+            stats["gpu"] = random.uniform(70.0, 100.0)
+            print(f"[{machine}] ⚡ Pic CPU détecté...", flush=True)
 
-    # 2. LÉGÈRES FLUCTUATIONS DU REPOS
-    base_cpu = max(5.0, min(25.0, base_cpu + random.uniform(-2, 2)))
-    base_ram = max(20.0, min(45.0, base_ram + random.uniform(-1, 1)))
-    base_disk = max(5.0, min(30.0, base_disk + random.uniform(-2, 2)))
+        if random.randint(1, 70) == 1:
+            stats["ram"] = random.uniform(85.0, 100.0)
 
-    # 3. DESCENTE PROGRESSIVE (L'inertie des ressources)
-    # Les multiplicateurs (0.20, 0.10) définissent la vitesse de la baisse.
-    cpu_usage += (base_cpu - cpu_usage) * 0.20 
-    gpu_usage += (5.0 - gpu_usage) * 0.20
-    ram_usage += (base_ram - ram_usage) * 0.10   # La RAM met plus de temps à se purger
-    disk_usage += (base_disk - disk_usage) * 0.30 # Le cache disque se vide plus vite
+        # 2. SIMULATION DES UTILISATEURS (Variation aléatoire)
+        # On simule entre 1 et 10 utilisateurs connectés
+        if random.randint(1, 10) == 1:
+            stats["users"] = max(1, min(10, stats["users"] + random.choice([-1, 1])))
 
-    # 4. CONSÉQUENCE THERMIQUE DIRECTE
-    target_temp = 25.0 + (cpu_usage * 0.95) + (gpu_usage * 0.3)
-    temp_c += (target_temp - temp_c) * 0.35 + random.uniform(-0.5, 0.5)
-    temp_c = max(20.0, min(150.0, temp_c))
+        # 3. FLUCTUATIONS ET INERTIE
+        base_cpu = max(5.0, min(25.0, base_cpu + random.uniform(-2, 2)))
+        stats["cpu"] += (base_cpu - stats["cpu"]) * 0.20
+        stats["ram"] += (base_ram - stats["ram"]) * 0.10
+        stats["disk"] += (base_disk - stats["disk"]) * 0.30
 
-    print(f"[{machine}] CPU:{cpu_usage:02.0f}% | RAM:{ram_usage:02.0f}% | Disque:{disk_usage:02.0f}% | Temp:{temp_c:.1f}°C", flush=True)
+        # 4. THERMIQUE
+        target_temp = 25.0 + (stats["cpu"] * 0.95) + (stats["gpu"] * 0.3)
+        stats["temp"] += (target_temp - stats["temp"]) * 0.35 + random.uniform(-0.5, 0.5)
 
-    # Protocole de sécurité absolu
-    if (temp_c + 273.15) > 2500:
-        print(f"[{machine}] ALERTE : Il faut toujours garder les systèmes de refroidissement actifs une fois que le cœur dépasse 2500K.", flush=True)
-        sys.exit(1)
+        # Log console mis à jour
+        print(f"[{machine}] CPU:{stats['cpu']:02.0f}% | Users:{stats['users']} | Temp:{stats['temp']:.1f}°C", flush=True)
 
-    time.sleep(2)
+        time.sleep(2)
+
+# --- API FLASK ---
+app = Flask(__name__)
+
+@app.route('/stats')
+def stats_api():
+    # On renvoie les données à jour avec la clé "users"
+    return jsonify({
+        "machine": machine,
+        "os": os_type,
+        "cpu": round(stats["cpu"], 2),
+        "ram": round(stats["ram"], 2),
+        "disk": round(stats["disk"], 2),
+        "temp": round(stats["temp"], 2),
+        "users": stats["users"]  # <--- CRITIQUE : Cette ligne manquait !
+    })
+
+if __name__ == "__main__":
+    threading.Thread(target=run_simulation_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000)
