@@ -4,7 +4,6 @@ services:
    build:
     context: .
     dockerfile: Dockerfile
-
    volumes:
      - ../../code_monitoring:/app/code_monitoring
      - ../../Data:/app/data
@@ -12,7 +11,6 @@ services:
       - monitoring-net
    environment:
       - PYTHONUNBUFFERED=1 
-
    command: python /app/code_monitoring/sonde/collecteur.py
 
   # --- PARC SIMULÉ : MACHINES LINUX ---
@@ -40,7 +38,10 @@ services:
 
   # --- PARC SIMULÉ : POSTES WINDOWS ---
   win-wkst-1:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile.windows
+    tty: true
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-01
@@ -51,7 +52,10 @@ services:
     command: python /scripts/simu_agent.py
 
   win-wkst-2:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile.windows
+    tty: true
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-02
@@ -61,9 +65,12 @@ services:
       - monitoring-net
     command: python /scripts/simu_agent.py
 
-  # --- SERVEUR WINDOWS CRITIQUE (Haute Disponibilité) ---
+  # --- SERVEUR WINDOWS CRITIQUE ---
   win-srv-indispensable:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile.windows
+    tty: true
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=SRV-WIN-CORE
@@ -74,7 +81,6 @@ services:
     command: python /scripts/simu_agent.py
     restart: always
 
-# --- RÉSEAU VIRTUEL ---
 networks:
   monitoring-net:
     driver: bridge

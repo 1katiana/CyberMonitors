@@ -1,67 +1,84 @@
 import time
 import os
 import random
-import sys
 import threading
 from flask import Flask, jsonify
 
-# --- CONFIGURATION ET ETAT ---
+# --- 1. CONFIGURATION DE BASE ---
 machine = os.environ.get('MACHINE_NAME', 'Inconnu')
 os_type = os.environ.get('OS_TYPE', 'Inconnu')
 
-# On ajoute "users" dans le dictionnaire initial
-stats = {
-    "cpu": 10.0,
-    "gpu": 5.0,
-    "ram": 30.0,
-    "disk": 15.0,
-    "temp": 30.0,
-    "users": 1  # <--- Ajouté
+# --- 2. PROFILS MATERIELS (Le coeur du realisme) ---
+def get_hardware_profile(name):
+    if "SRV-WIN-CORE" in name:
+        return {"ram_total_gb": 128.0, "disk_total_gb": 4000.0, "cooling": 0.90, "type": "server_heavy"}
+    elif "SRV-LINUX" in name:
+        return {"ram_total_gb": 64.0, "disk_total_gb": 2000.0, "cooling": 0.85, "type": "server_standard"}
+    elif "WKST-WIN" in name:
+        return {"ram_total_gb": 16.0, "disk_total_gb": 512.0, "cooling": 0.50, "type": "workstation"}
+    else:
+        return {"ram_total_gb": 8.0, "disk_total_gb": 256.0, "cooling": 0.60, "type": "default"}
+
+hw = get_hardware_profile(machine)
+
+# --- 3. ETAT INTERNE REALISTE (En Gigaoctets) ---
+internal_state = {
+    "ram_used_gb": hw["ram_total_gb"] * random.uniform(0.15, 0.25),
+    "disk_used_gb": hw["disk_total_gb"] * random.uniform(0.40, 0.60),
+    "cpu_target": 5.0,
+    "temp_current": 35.0,
+    "users_count": 0 if "server" in hw["type"] else 1
 }
 
-# Valeurs de "repos"
-base_cpu, base_ram, base_disk = 10.0, 30.0, 15.0
+# --- 4. DICTIONNAIRE D'EXPORT ---
+stats = {
+    "cpu": 0.0, "gpu": 0.0, "ram": 0.0, "disk": 0.0, "temp": 0.0, "users": 0
+}
 
 def run_simulation_loop():
-    global base_cpu, base_ram, base_disk
-    print(f"[{machine}] ({os_type}) Simulation démarrée...", flush=True)
+    print(f"[{machine}] Specs physiques chargees : {hw['ram_total_gb']}Go RAM | {hw['disk_total_gb']}Go Disque", flush=True)
+    current_cpu = 5.0
 
     while True:
-        # 1. PICS ALÉATOIRES
-        if random.randint(1, 50) == 1:
-            stats["cpu"] = random.uniform(85.0, 100.0)
-            stats["gpu"] = random.uniform(70.0, 100.0)
-            print(f"[{machine}] ⚡ Pic CPU détecté...", flush=True)
+        if hw["type"] == "workstation":
+            if random.randint(1, 10) == 1:
+                internal_state["cpu_target"] = random.uniform(40.0, 95.0)
+                internal_state["ram_used_gb"] += random.uniform(0.2, 1.5)
+            else:
+                internal_state["cpu_target"] = random.uniform(2.0, 15.0)
+            if random.randint(1, 20) == 1:
+                internal_state["users_count"] = random.choice([0, 1, 1])
+        else:
+            if random.randint(1, 20) == 1:
+                internal_state["cpu_target"] = random.uniform(60.0, 90.0)
+            else:
+                internal_state["cpu_target"] = max(5.0, min(80.0, internal_state["cpu_target"] + random.uniform(-5, 5)))
+            internal_state["ram_used_gb"] += random.uniform(0.01, 0.08)
+            if random.randint(1, 15) == 1:
+                internal_state["users_count"] = max(0, min(5, internal_state["users_count"] + random.choice([-1, 0, 1])))
 
-        if random.randint(1, 70) == 1:
-            stats["ram"] = random.uniform(85.0, 100.0)
+        internal_state["ram_used_gb"] = min(internal_state["ram_used_gb"], hw["ram_total_gb"])
+        internal_state["disk_used_gb"] = min(internal_state["disk_used_gb"] + 0.005, hw["disk_total_gb"])
+        current_cpu += (internal_state["cpu_target"] - current_cpu) * 0.3
+        
+        temp_target = 30.0 + (current_cpu * 0.6)
+        internal_state["temp_current"] += (temp_target - internal_state["temp_current"]) * (1.0 - hw["cooling"])
+        internal_state["temp_current"] += random.uniform(-0.3, 0.3)
 
-        # 2. SIMULATION DES UTILISATEURS (Variation aléatoire)
-        # On simule entre 1 et 10 utilisateurs connectés
-        if random.randint(1, 10) == 1:
-            stats["users"] = max(1, min(10, stats["users"] + random.choice([-1, 1])))
-
-        # 3. FLUCTUATIONS ET INERTIE
-        base_cpu = max(5.0, min(25.0, base_cpu + random.uniform(-2, 2)))
-        stats["cpu"] += (base_cpu - stats["cpu"]) * 0.20
-        stats["ram"] += (base_ram - stats["ram"]) * 0.10
-        stats["disk"] += (base_disk - stats["disk"]) * 0.30
-
-        # 4. THERMIQUE
-        target_temp = 25.0 + (stats["cpu"] * 0.95) + (stats["gpu"] * 0.3)
-        stats["temp"] += (target_temp - stats["temp"]) * 0.35 + random.uniform(-0.5, 0.5)
-
-        # Log console mis à jour
-        print(f"[{machine}] CPU:{stats['cpu']:02.0f}% | Users:{stats['users']} | Temp:{stats['temp']:.1f}°C", flush=True)
+        stats["cpu"] = current_cpu
+        stats["gpu"] = current_cpu * 0.3 + random.uniform(0, 5)
+        stats["ram"] = (internal_state["ram_used_gb"] / hw["ram_total_gb"]) * 100.0
+        stats["disk"] = (internal_state["disk_used_gb"] / hw["disk_total_gb"]) * 100.0
+        stats["temp"] = internal_state["temp_current"]
+        stats["users"] = internal_state["users_count"]
 
         time.sleep(2)
 
-# --- API FLASK ---
+# --- 5. API FLASK ---
 app = Flask(__name__)
 
 @app.route('/stats')
 def stats_api():
-    # On renvoie les données à jour avec la clé "users"
     return jsonify({
         "machine": machine,
         "os": os_type,
@@ -69,7 +86,7 @@ def stats_api():
         "ram": round(stats["ram"], 2),
         "disk": round(stats["disk"], 2),
         "temp": round(stats["temp"], 2),
-        "users": stats["users"]  # <--- CRITIQUE : Cette ligne manquait !
+        "users": stats["users"]
     })
 
 if __name__ == "__main__":
