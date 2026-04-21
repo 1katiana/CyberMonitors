@@ -9,6 +9,8 @@ services:
      - ../../Data:/app/data
    networks:
       - monitoring-net
+   ports:
+     ["5000:5000"]
    environment:
       - PYTHONUNBUFFERED=1 
    command: python /app/code_monitoring/sonde/collecteur.py
