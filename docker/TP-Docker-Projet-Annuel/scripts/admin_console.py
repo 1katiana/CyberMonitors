@@ -6,6 +6,8 @@ import threading
 import queue
 import getpass
 import hashlib
+import shutil
+import re
 
 # *** DESIGN ***
 C_BASE = '\033[96m'
@@ -44,9 +46,9 @@ def get_machines():
 
 def authenticate():
     valid_users_hashes = {
-        "Test": hashlib.sha256(b"Test!").hexdigest(),
-        "Arnaud": hashlib.sha256(b"CyberMonitor2026!").hexdigest(),
-        "Katiana": hashlib.sha256(b"CyberMonitor2026!").hexdigest()
+        "Test": "2c00032e034b28854ef7e34dd050717911dd3a755883e4c4e08bb4001374a979",
+        "Arnaud": "fdc65425ed191e98c8a7eacf7542646ebe95d00ac7651ea798701ee50748cfe2",
+        "Katiana": "fdc65425ed191e98c8a7eacf7542646ebe95d00ac7651ea798701ee50748cfe2"
     }
 
     for attempt in range(3, 0, -1):
@@ -55,16 +57,14 @@ def authenticate():
         print(f"Connexion a la Master Console.\n")
         
         user = input("Identifiant : ").strip()
-        pwd = getpass.getpass("Mot de passe : ")
+        pwd = getpass.getpass("Mot de passe : ").strip()
         
         print()
         
         hashed_pwd = hashlib.sha256(pwd.encode('utf-8')).hexdigest()
 
         if user in valid_users_hashes and valid_users_hashes[user] == hashed_pwd:
-            print(f"{C_OK}[*] Acces autorise. Bienvenue {user}.{C_END}")
-            time.sleep(1)
-            return True
+            return user
         else:
             if attempt > 1:
                 print(f"{C_DANGER}Identifiants incorrects. Il vous reste {attempt - 1} essai(s).{C_END}")
@@ -72,7 +72,7 @@ def authenticate():
             else:
                 print(f"{C_DANGER}[!] ACCES REFUSE. Incident de securite enregistre.{C_END}")
                 time.sleep(2)
-                return False
+                return None
 
 def capture_container_logs(container, q_out, proc_list):
     proc = subprocess.Popen(["docker", "logs", "-f", "--tail=20", container], 
@@ -83,11 +83,11 @@ def capture_container_logs(container, q_out, proc_list):
             if line: q_out.put(f"{C_BASE}[{container}]{C_END} {line.strip()}")
     except: pass
 
-def menu_actions(targets):
+def menu_actions(targets, current_user):
     while True:
         if not is_docker_alive(): return
         clear_screen()
-        print(f"{C_BASE}=== CIBLES : {', '.join(targets)} ==={C_END}\n")
+        print(f"{C_BASE}=== CIBLES : {', '.join(targets)} | Opérateur : {current_user} ==={C_END}\n")
         print(f"1. {C_OK}Console SSH (1ere cible){C_END}")
         print(f"2. {C_DANGER}Hard Crash (Stop){C_END}")
         print(f"3. {C_OK}Power On (Start){C_END}")
@@ -99,21 +99,86 @@ def menu_actions(targets):
         if c == '1':
             m = targets[0]
             if is_container_running(m):
-                sh = "pwsh" if "win" in m.lower() else "bash"
-                os.system(f"docker exec -it {m} {sh} || docker exec -it {m} /bin/sh")
+                os.system('clear')
+                os.system(f"docker exec -it {m} python3 /scripts/internal_login.py")
             else:
-                print(f"{C_WARN}[!] Machine eteinte.{C_END}"); time.sleep(1)
+                print(f"{C_WARN}[!] Machine eteinte.{C_END}")
+                time.sleep(1)
+                
         elif c == '2':
+            clear_screen()
+            print(f"{C_DANGER}=== DESACTIVATION EN COURS ==={C_END}\n")
+            
+            # Initialisation de l'etat de chaque machine
+            states = {m: f"{C_BASE}En attente...{C_END}" for m in targets}
+            
+            # Impression de lignes vides pour reserver l'espace visuel dans le terminal
+            for _ in targets: print()
+                
+            def render_states_stop():
+                # Remonte le curseur du nombre exact de cibles
+                sys.stdout.write(f"\033[{len(targets)}A")
+                for m in targets:
+                    # \033[K permet d'effacer les restes de l'ancien texte sur cette ligne
+                    sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
+                sys.stdout.flush()
+                
+            render_states_stop()
+            
             for m in targets:
-                print(f"{C_WARN}[...] Arret de {m}{C_END}")
+                states[m] = f"{C_WARN}Desactivation en cours...{C_END}"
+                render_states_stop()
                 run(f"docker stop {m}")
-            print(f"{C_DANGER}[OK] Cibles stoppees.{C_END}"); time.sleep(1); break
+                states[m] = f"{C_DANGER}Desactivee.{C_END}"
+                render_states_stop()
+                
+            print(f"\n{C_OK}[OK] Toutes les cibles selectionnees sont stoppees.{C_END}")
+            time.sleep(2)
+            break
+            
         elif c == '3':
+            clear_screen()
+            print(f"{C_OK}=== DEMARRAGE EN COURS ==={C_END}\n")
+            
+            states = {m: f"{C_BASE}En attente...{C_END}" for m in targets}
+            
+            for _ in targets: print()
+                
+            def render_states_start():
+                sys.stdout.write(f"\033[{len(targets)}A")
+                for m in targets:
+                    sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
+                sys.stdout.flush()
+                
+            render_states_start()
+            
             for m in targets:
-                print(f"{C_WARN}[...] Demarrage de {m}{C_END}")
+                states[m] = f"{C_WARN}Demarrage en cours...{C_END}"
+                render_states_start()
                 run(f"docker start {m}")
-            print(f"{C_OK}[OK] Cibles en ligne.{C_END}"); time.sleep(1); break
+                states[m] = f"{C_OK}En ligne.{C_END}"
+                render_states_start()
+                
+            print(f"\n{C_OK}[OK] Toutes les cibles selectionnees sont demarrees.{C_END}")
+            time.sleep(2)
+            break
+            
         elif c == '4':
+            # FIX : On nettoie l'ecran avant d'afficher le sous-menu d'attaque
+            clear_screen()
+            print(f"{C_BASE}=== PREPARATION DES ATTAQUES ==={C_END}\n")
+            
+            online_machines = [m for m in targets if is_container_running(m)]
+            offline_machines = [m for m in targets if not is_container_running(m)]
+            
+            if offline_machines:
+                print(f"{C_WARN}[!] Info : Les machines suivantes sont eteintes et seront ignorees : {', '.join(offline_machines)}{C_END}")
+            
+            if not online_machines:
+                print(f"\n{C_DANGER}[!] Erreur : Aucune machine cible n'est allumee. Action annulee.{C_END}")
+                time.sleep(3)
+                break
+
             print(f"\n{C_BASE}*** LOGICIELS ***{C_END}")
             print("1. Ouvrir Chrome  2. Fermer Chrome")
             print(f"\n{C_DANGER}*** MALWARES ET ATTAQUES ***{C_END}")
@@ -130,17 +195,22 @@ def menu_actions(targets):
             }
             act = map_a.get(sub)
             if act:
-                for m in targets:
-                    if is_container_running(m):
-                        run(f"docker exec {m} python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/trigger?action={act}')\"")
-                print(f"{C_OK}[OK] Action envoyee.{C_END}"); time.sleep(1)
+                for m in online_machines:
+                    run(f"docker exec {m} python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/trigger?action={act}')\"")
+                print(f"{C_OK}[OK] Ordre execute par {current_user}.{C_END}")
+                time.sleep(1)
             break
         elif c == '0': break
 
 def main():
     while True:
-        if not authenticate():
+        current_user = authenticate()
+        
+        if not current_user:
             sys.exit(1)
+            
+        print(f"{C_OK}[*] Authentification validee. Bienvenue {current_user} !{C_END}")
+        time.sleep(1)
             
         while True:
             clear_screen()
@@ -150,6 +220,7 @@ def main():
             m_list = get_machines()
             print(f"{C_BASE}=========================================={C_END}")
             print(f"{C_BASE}       CYBER MONITOR : MASTER CONSOLE     {C_END}")
+            print(f"{C_WARN}       Session Active : {current_user.upper()}    {C_END}")
             print(f"{C_BASE}=========================================={C_END}\n")
             
             for i, m in enumerate(m_list):
@@ -160,11 +231,11 @@ def main():
             choice = input(f"\n{C_WARN}Selection : {C_END}").lower().strip()
             
             if choice == 'q':
-                print(f"\n{C_OK}Fermeture de la Master Console. Au revoir!{C_END}")
+                print(f"\n{C_OK}Fermeture de la Master Console. Au revoir {current_user} !{C_END}")
                 sys.exit(0)
             
             if choice == 'd':
-                print(f"\n{C_OK}Deconnexion en cours...{C_END}")
+                print(f"\n{C_WARN}Deconnexion de l'utilisateur {current_user} en cours...{C_END}")
                 time.sleep(1)
                 break 
                 
@@ -185,18 +256,46 @@ def main():
                 if not selected_logs:
                     continue
 
+                online_logs = [m for m in selected_logs if is_container_running(m)]
+                offline_logs = [m for m in selected_logs if not is_container_running(m)]
+
+                if not online_logs:
+                    print(f"{C_DANGER}[!] Erreur : Aucune machine selectionnee n'est allumee. Lecture des logs impossible.{C_END}")
+                    time.sleep(2)
+                    continue
+
                 clear_screen()
-                print(f"{C_BASE}=== LOGS EN DIRECT : {', '.join(selected_logs)} ==={C_END}\n")
+                print(f"{C_BASE}=== LOGS EN DIRECT : {', '.join(online_logs)} ==={C_END}\n")
                 
                 q = queue.Queue()
                 procs = []
                 
-                for m_name in selected_logs:
+                for m_name in online_logs:
                     threading.Thread(target=capture_container_logs, args=(m_name, q, procs), daemon=True).start()
 
                 msg = f"{C_WARN}>>> [Q] RETOUR MENU <<<{C_END}"
+                if offline_logs:
+                    msg += f"  {C_DANGER}[Masquees car Eteintes : {', '.join(offline_logs)}]{C_END}"
+                
                 sys.stdout.write(msg)
                 sys.stdout.flush()
+
+                def refresh_screen(new_log=None, clear=False):
+                    cols = shutil.get_terminal_size((80, 20)).columns
+                    plain_msg = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', msg)
+                    lines_occupied = max(1, (len(plain_msg) // cols) + 1)
+                    
+                    sys.stdout.write("\r")
+                    if lines_occupied > 1:
+                        sys.stdout.write(f"\033[{lines_occupied - 1}A")
+                    
+                    sys.stdout.write("\033[J")
+                    
+                    if not clear:
+                        if new_log:
+                            sys.stdout.write(new_log + "\n")
+                        sys.stdout.write(msg)
+                    sys.stdout.flush()
 
                 if os.name == 'nt':
                     import msvcrt
@@ -206,8 +305,7 @@ def main():
                                 break
                             while not q.empty():
                                 line = q.get_nowait()
-                                sys.stdout.write("\r" + " " * 80 + "\r" + line + "\n" + msg)
-                                sys.stdout.flush()
+                                refresh_screen(line)
                             time.sleep(0.05)
                     except KeyboardInterrupt: pass
                 else:
@@ -216,8 +314,7 @@ def main():
                         while True:
                             while not q.empty():
                                 line = q.get_nowait()
-                                sys.stdout.write("\r" + " " * 80 + "\r" + line + "\n" + msg)
-                                sys.stdout.flush()
+                                refresh_screen(line)
                             if sys.stdin in select.select([sys.stdin], [], [], 0.05)[0]:
                                 if sys.stdin.read(1).lower() == 'q':
                                     break
@@ -227,11 +324,9 @@ def main():
                     try: p.terminate()
                     except: pass
                 
-                sys.stdout.write("\r" + " " * 80 + "\r")
-                sys.stdout.flush()
+                refresh_screen(clear=True)
                 continue
 
-            # *** SELECTION MULTIPLE ***
             selected = []
             if choice in ['toutes', 'all', '*']:
                 selected = [m['name'] for m in m_list]
@@ -242,11 +337,11 @@ def main():
                     selected = [m_list[i]['name'] for i in indexes if 0 <= i < len(m_list)]
                 except: continue
             
-            if selected: menu_actions(selected)
+            if selected: menu_actions(selected, current_user)
 
 if __name__ == "__main__":
     try: 
         main()
     except KeyboardInterrupt: 
-        print(f"\n\n{C_OK}Master Console arretee. Au revoir!{C_END}")
+        print(f"\n\n{C_OK}Master Console arretee brutalement. Au revoir !{C_END}")
         sys.exit(0)
