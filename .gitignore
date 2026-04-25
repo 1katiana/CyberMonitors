@@ -1,0 +1,19 @@
+# IDE & System
+.vs/
+.vscode/
+*.sln
+*.slnx
+v18/
+FileContentIndex/
+__pycache__/
+.DS_Store
+
+# Data & Generated Files
+code_monitoring/dashboard/static/graphs/*.svg
+Data/*.db
+!Data/.gitkeep
+
+# Temporary/Old versions
+dashboard0/
+dashboard1/
+dashboard2/

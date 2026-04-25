@@ -10,52 +10,61 @@ PARC_INFORMATIQUE = [
     "win-srv-indispensable"
 ]
 DB_PATH = "/app/data/monitoring.db"
-MAX_LIGNES = 2000  #Limite fixée
+MAX_LIGNES = 2000 
+
+def clean_name(name):
+    """Supprime les tirets et colle tout (ex: linux-srv-1 -> linuxsrv1)"""
+    return name.replace("-", "").replace("_", "")
 
 def initialiser_db():
     dossier = os.path.dirname(DB_PATH)
     if not os.path.exists(dossier):
         os.makedirs(dossier)
-        print(f"Dossier créé : {dossier}")
 
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS system_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                machine TEXT,
-                cpu_usage REAL,
-                ram_usage REAL,
-                temp REAL,
-                users_count INTEGER
-            )
-        """)
+        
+        for machine in PARC_INFORMATIQUE:
+            table_name = clean_name(machine)
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
+                    os TEXT,
+                    cpu_usage REAL,
+                    gpu_usage REAL,
+                    ram_usage REAL,
+                    disk_usage REAL,
+                    temp REAL,
+                    users_count INTEGER
+                )
+            """)
+        
         conn.commit()
         conn.close()
-        print("Base de données initialisée avec succès.")
+        print("🗄️ Base initialisée : Une table collée par asset.")
     except sqlite3.OperationalError as e:
-        print(f"Erreur SQLite : {e}")
+        print(f"❌ Erreur Initialisation : {e}")
 
 def nettoyer_db():
-    """Supprime les anciennes lignes pour n'en garder que MAX_LIGNES."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        # Cette requête supprime toutes les lignes dont l'ID n'est pas dans les 2000 plus récents
-        cursor.execute(f"""
-            DELETE FROM system_data 
-            WHERE id NOT IN (
-                SELECT id FROM system_data 
-                ORDER BY timestamp DESC 
-                LIMIT {MAX_LIGNES}
-            )
-        """)
+        for machine in PARC_INFORMATIQUE:
+            table_name = clean_name(machine)
+            cursor.execute(f"""
+                DELETE FROM {table_name} 
+                WHERE id NOT IN (
+                    SELECT id FROM {table_name} 
+                    ORDER BY timestamp DESC 
+                    LIMIT {MAX_LIGNES}
+                )
+            """)
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Erreur lors du nettoyage : {e}")
+        print(f"❌ Erreur Nettoyage : {e}")
 
 def collecter_donnees():
     conn = sqlite3.connect(DB_PATH)
@@ -66,14 +75,27 @@ def collecter_donnees():
             response = requests.get(f"http://{machine}:5000/stats", timeout=3)
             if response.status_code == 200:
                 data = response.json()
-                cursor.execute("""
-                    INSERT INTO system_data (machine, cpu_usage, ram_usage, temp, users_count)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (machine, data['cpu'], data['ram'], data['temp'], data['users']))
+                table_name = clean_name(machine)
                 
-                print(f"{machine} : {data['users']} utilisateurs connectés.")
-        except Exception as e:
-            print(f"{machine} injoignable.")
+                # Insertion propre dans la table dédiée
+                cursor.execute(f"""
+                    INSERT INTO {table_name} (
+                        os, cpu_usage, gpu_usage, 
+                        ram_usage, disk_usage, temp, users_count
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    data.get('os', 'Unknown'),
+                    data['cpu'],
+                    data.get('gpu', 0.0),
+                    data['ram'],
+                    data.get('disk', 0.0),
+                    data['temp'],
+                    data['users']
+                ))
+                print(f"✅ {machine} -> Table {table_name} : OK")
+        except Exception:
+            print(f"⚠️ {machine} injoignable.")
 
     conn.commit()
     conn.close()
@@ -82,5 +104,5 @@ if __name__ == "__main__":
     initialiser_db()
     while True:
         collecter_donnees()
-        nettoyer_db()  #On nettoie après chaque collecte
+        nettoyer_db()
         time.sleep(5)

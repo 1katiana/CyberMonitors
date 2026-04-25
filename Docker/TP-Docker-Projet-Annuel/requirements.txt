@@ -2,3 +2,5 @@ pygal
 flask
 requests
 psutil
+plotly
+pandas

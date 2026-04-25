@@ -1,0 +1,42 @@
+﻿{% extends "layout.html" %}
+{% block content %}
+<div style="text-align: center; margin-bottom: 50px;">
+    <h1 style="font-size: 2.8rem; color: #fff; text-transform: uppercase; letter-spacing: 4px;">
+        <span style="color: #00e5ff;">Global</span> Command Center
+    </h1>
+    <p style="color: #8b949e;">Surveillance comparative du parc en temps réel</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr; gap: 40px; margin-bottom: 50px;">
+    {% for label, path in graphs.items() %}
+    <div style="background: #161b22; border: 1px solid #30363d; border-radius: 15px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+            <div style="width: 12px; height: 12px; background: #00e5ff; border-radius: 50%; margin-right: 15px; box-shadow: 0 0 10px #00e5ff;"></div>
+            <h2 style="margin: 0; font-size: 1.2rem; color: #e0e0e0;">{{ label }}</h2>
+        </div>
+        <img src="{{ url_for('static', filename=path) }}" style="width: 100%; height: auto;">
+    </div>
+    {% endfor %}
+</div>
+
+<div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-top: 20px;">
+    {% for m in nav_machines %}
+    <a href="/asset/{{ m }}" style="padding: 12px 25px; background: #1f2235; border: 1px solid #00e5ff; color: #00e5ff; text-decoration: none; border-radius: 30px; font-weight: bold; transition: 0.3s;">
+        {{ m }}
+    </a>
+    {% endfor %}
+</div>
+
+<style>
+    /* Animation subtile pour le dashboard */
+    .card:hover {
+        border-color: #00e5ff !important;
+    }
+
+    a:hover {
+        background: #00e5ff !important;
+        color: #000 !important;
+        transform: translateY(-3px);
+    }
+</style>
+{% endblock %}

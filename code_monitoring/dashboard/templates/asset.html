@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="text-align: center; margin-bottom: 40px;">
+    <h1 style="font-size: 2.5rem; letter-spacing: 2px; color: #fff; text-transform: uppercase;">
+        {{ asset.name }}
+    </h1>
+    <div style="height: 2px; width: 100px; background: #00e5ff; margin: 10px auto;"></div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 30px;">
+    {% for label, path in asset.graphs.items() %}
+    <div style="background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+        <h3 style="margin: 0 0 15px 0; color: #8b949e; font-size: 0.9rem; text-transform: uppercase;">
+            {{ label }}
+        </h3>
+        <img src="{{ url_for('static', filename=path) }}" style="width: 100%; filter: drop-shadow(0 0 5px rgba(0,0,0,0.2));">
+    </div>
+    {% endfor %}
+</div>
+
+<div style="margin-top: 50px; opacity: 0.7;">
+    <h3 style="color: #00e5ff;">Log Historique</h3>
+    <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+        <tr style="border-bottom: 1px solid #30363d; color: #00e5ff;">
+            <th style="padding: 10px; text-align: left;">TIME</th>
+            <th>CPU</th>
+            <th>RAM</th>
+            <th>DISK</th>
+            <th>TEMP</th>
+            <th>USERS</th>
+        </tr>
+        {% for row in asset.history %}
+        <tr style="border-bottom: 1px solid #21262d;">
+            <td style="padding: 8px;">{{ row[5] }}</td>
+            <td style="text-align: center;">{{ row[0] }}%</td>
+            <td style="text-align: center;">{{ row[1] }}%</td>
+            <td style="text-align: center;">{{ row[2] }}%</td>
+            <td style="text-align: center;">{{ row[3] }}°C</td>
+            <td style="text-align: center;">{{ row[4] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endblock %}

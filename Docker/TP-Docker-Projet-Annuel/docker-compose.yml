@@ -1,17 +1,39 @@
 services:
-  # --- SERVEUR CENTRAL DE MONITORING ---
-  cyber-monitor-center:
-   build:
-    context: .
-    dockerfile: Dockerfile
-   volumes:
-     - ../../code_monitoring:/app/code_monitoring
-     - ../../Data:/app/data
-   networks:
+  # --- COLLECTEUR (Le cœur qui remplit la base) ---
+  cyber-monitor-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monitor_collector
+    volumes:
+      - ../../code_monitoring:/app/code_monitoring
+      - ../../Data:/app/data
+    networks:
       - monitoring-net
-   environment:
+    environment:
       - PYTHONUNBUFFERED=1 
-   command: python /app/code_monitoring/sonde/collecteur.py
+    command: python /app/code_monitoring/sonde/collecteur.py
+    restart: always
+
+  # --- DASHBOARD (L'interface visuelle) ---
+  cyber-dashboard:
+    build:
+      context: . 
+    container_name: monitor_dashboard
+    ports:
+      - "8050:8050" 
+    volumes:
+      - ../../code_monitoring:/app/code_monitoring
+      - ../../Data:/app/data
+    networks:
+      - monitoring-net
+    environment:
+      - PYTHONUNBUFFERED=1
+    # On lance bien app.py (le serveur Flask)
+    command: python /app/code_monitoring/dashboard/app.py 
+    depends_on:
+      - cyber-monitor-collector
+    restart: always
 
   # --- PARC SIMULÉ : MACHINES LINUX ---
   linux-srv-1:
