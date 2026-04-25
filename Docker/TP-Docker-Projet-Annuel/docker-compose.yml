@@ -14,7 +14,6 @@ services:
       - PYTHONUNBUFFERED=1 
     command: python /app/code_monitoring/sonde/collecteur.py
     restart: always
-
   # --- DASHBOARD (L'interface visuelle) ---
   cyber-dashboard:
     build:
