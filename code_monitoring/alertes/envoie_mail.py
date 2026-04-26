@@ -1,42 +1,35 @@
-#!/usr/bin/env python3
-from detection_de_crise import fetch_latest_data, check_crisis, load_config
+# -*- coding: utf-8 -*-
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from detetction_de_crises.detection_de_crise import load_config
+import os
 
-def load_template():
-    with open("email_template.txt", "r") as f:
-        return f.read()
-
-def send_email_alert(crises):
+def send_combined_alert(all_crises):
+    config = load_config()
     sender = "katianaaoudia23@gmail.com"
-    receiver = "katianaaoudia23@gmail.com"
-    password = "dptg vvsr depl kcjh"
-
-    subject = "ALERTE : Crise détectée sur le serveur"
-    template = load_template()
-    body = template.replace("{{crises}}", "\n".join(crises))
+    password = os.environ.get("EMAIL_PASSWORD")
+    recipients = config["alert_recipients"]
 
     msg = MIMEMultipart()
     msg["From"] = sender
-    msg["To"] = receiver
-    msg["Subject"] = subject
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = f"ALERTE SOC CRITIQUE : {len(all_crises)} Asset(s) en danger"
+
+    # Construction du corps du mail (Ton message conservé à 100%)
+    body = "Bonjour,\n\nDes anomalies ont été détectées sur une de vos machines :\n\n"
+    for crisis in all_crises:
+        body += f" ASSET : {crisis['asset']}\n"
+        body += f" HEURE : {crisis['time']}\n"
+        body += f" ALERTES : {', '.join(crisis['details'])}\n"
+        body += "-------------------------------------------\n"
+    body += "\nVeuillez intervenir sur le dashboard : http://localhost:8050"
     msg.attach(MIMEText(body, "plain"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
-            server.sendmail(sender, receiver, msg.as_string())
-            print("Alerte envoyée par email.")
+            server.sendmail(sender, recipients, msg.as_string())
+            print(f" Email envoyé à : {', '.join(recipients)}")
     except Exception as e:
-        print("Erreur lors de l'envoi de l'email:", e)
-
-# Lancement
-config = load_config()
-data = fetch_latest_data()
-crises = check_crisis(data, config)
-
-if crises:
-    send_email_alert(crises)
-else:
-    print("Aucune crise détectée.")
+        print(f" Erreur SMTP: {e}")

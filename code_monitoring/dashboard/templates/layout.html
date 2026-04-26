@@ -48,6 +48,80 @@
             {% endfor %}
         </div>
     </nav>
+    <div class="container-fluid" style="margin-top: 10px;">
+        {% if current_crises %}
+        {% for crisis in current_crises %}
+        <div class="alert-box-urgent">
+            <span class="symbol">⚠️</span>
+            <strong>ALERTE SUR {{ crisis.asset }} :</strong>
+            {{ crisis.details | join(', ') }}
+            <span class="time">({{ crisis.time.split(' ')[-1] }})</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    <style>
+        .alert-box-urgent {
+            background: linear-gradient(90deg, #ff3d00, #ff1744);
+            color: white;
+            padding: 12px 20px;
+            margin-bottom: 8px;
+            border-radius: 5px;
+            font-weight: bold;
+            border-left: 8px solid #b2102f;
+            animation: pulse-red 2s infinite;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(255, 61, 0, 0.3);
+        }
+
+            .alert-box-urgent .symbol {
+                font-size: 1.5rem;
+                margin-right: 15px;
+            }
+
+            .alert-box-urgent .time {
+                margin-left: auto;
+                font-family: monospace;
+                opacity: 0.8;
+            }
+
+        @keyframes pulse-red {
+            0% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.01);
+                box-shadow: 0 4px 25px rgba(255, 61, 0, 0.5);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+    </style>
+   
+
+    <style>
+        @keyframes shake {
+            0% {
+                transform: translateX(0);
+            }
+
+            25% {
+                transform: translateX(-5px);
+            }
+
+            50% {
+                transform: translateX(5px);
+            }
+
+            100% {
+                transform: translateX(0);
+            }
+    </style>
     <div class="container">
         {% block content %}{% endblock %}
     </div>

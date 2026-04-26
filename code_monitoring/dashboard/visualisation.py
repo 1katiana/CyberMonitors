@@ -52,7 +52,6 @@ def generate_comparison_graphs(parc):
         
     conn = sqlite3.connect(DB_PATH)
     
-    # Configuration étendue avec Disque et Users
     metrics = {
         'cpu': {'title': 'Comparaison CPU (%)', 'col': 'cpu_usage', 'is_int': False},
         'ram': {'title': 'Comparaison RAM (%)', 'col': 'ram_usage', 'is_int': False},
@@ -61,7 +60,23 @@ def generate_comparison_graphs(parc):
     }
 
     for key, info in metrics.items():
-        chart = pygal.Line(x_label_rotation=20, height=350, style=DarkStyle, explicit_size_hint=True)
+        # Utilisation du style custom pour la cohérence visuelle
+        custom_style = DarkStyle(
+            background='transparent',
+            plot_background='transparent',
+            foreground='#ffffff',
+            foreground_strong='#ffffff',
+            foreground_subtle='#a0a0a0',
+            opacity='.6',
+            opacity_hover='.9'
+        )
+
+        chart = pygal.Line(
+            x_label_rotation=20, 
+            height=350, 
+            style=custom_style, 
+            explicit_size_hint=True
+        )
         chart.title = info['title']
         
         all_dates = []
@@ -88,10 +103,20 @@ def generate_comparison_graphs(parc):
         
         if data_found:
             chart.x_labels = all_dates
-            # Forcer l'échelle entière pour les utilisateurs
+            
+            #CORRECTION PROTECTION DDOS 
             if info['is_int']:
-                max_val = max(all_values_for_scale) if all_values_for_scale else 5
-                chart.y_labels = list(range(0, int(max_val) + 2))
+                max_val = int(max(all_values_for_scale)) if all_values_for_scale else 5
+                
+                # On limite l'affichage manuel à 15 paliers max
+                # Si on dépasse 15, on laisse Pygal gérer l'auto-scaling
+                if max_val < 15:
+                    chart.y_labels = list(range(0, max_val + 2))
+                else:
+                    # En cas de DDoS, on ne définit PAS y_labels
+                    # Pygal va afficher des paliers intelligents 
+                    chart.y_labels = None
+           
                 
             chart.render_to_file(os.path.join(OUTPUT_DIR, f"compare_{key}.svg"))
             
@@ -126,8 +151,8 @@ def update_all_graphs(parc):
                 create_chart("Température °C", dates, temp, '#ff3d00', f"{table_name}_temp.svg")
                 create_chart("Utilisateurs", dates, users, '#d500f9', f"{table_name}_users.svg", is_user_chart=True)
                 
-                print(f"✅ Graphiques mis à jour pour {machine}")
+                print(f"Graphiques mis à jour pour {machine}")
         except Exception as e:
-            print(f"❌ Erreur SQL/Pygal pour {machine}: {e}")
+            print(f"Erreur SQL/Pygal pour {machine}: {e}")
     conn.close()
 

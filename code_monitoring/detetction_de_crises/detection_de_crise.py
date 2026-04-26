@@ -1,66 +1,62 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import sqlite3
 import json
+import os
 from datetime import datetime, timedelta
 
+DB_PATH = "/app/data/monitoring.db"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+
 def load_config():
-    with open("config.json") as f:
+    with open(CONFIG_PATH) as f:
         return json.load(f)
 
-def fetch_latest_data():
-    conn = sqlite3.connect("monitoring.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT ram_usage, disk_usage, cpu_usage, users_count, process_count, timestamp
-        FROM system_data
-        ORDER BY timestamp DESC
-        LIMIT 1
-    """)
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row:
-        return []
-
-    return [{
-        "name": "serveur 1",
-        "ram": float(row[0].replace('%', '').strip()),
-        "disk": float(row[1].replace('%', '').strip()),
-        "cpu": float(row[2].replace('%', '').strip()),
-        "users": int(row[3]),
-        "processes": int(row[4]),
-        "last_seen": row[5]
-    }]
-
-def check_crisis(data, config):
-    crises = []
-    now = datetime.now()
-
-    for server in data:
-        if server["ram"] >= config["ram_threshold"]:
-            crises.append(f"RAM saturée ({server['ram']}%) sur {server['name']}")
-        if server["disk"] >= config["disk_threshold"]:
-            crises.append(f"Disque saturé ({server['disk']}%) sur {server['name']}")
-        if server["cpu"] >= config["cpu_threshold"]:
-            crises.append(f"CPU saturé ({server['cpu']}%) sur {server['name']}")
-        if server["users"] > config["user_threshold"]:
-            crises.append(f"Trop d'utilisateurs connectés ({server['users']}) sur {server['name']}")
-        if server["processes"] > config["process_threshold"]:
-            crises.append(f"Trop de processus actifs ({server['processes']}) sur {server['name']}")
-
-        last_seen = datetime.strptime(server["last_seen"], "%Y-%m-%d %H:%M:%S")
-        if now - last_seen > timedelta(minutes=config["max_delay_minutes"]):
-            crises.append(f"Plus de données depuis {config['max_delay_minutes']} minutes pour {server['name']}")
-
-    return crises
-
-if __name__ == "__main__":
+def check_all_assets(parc):
     config = load_config()
-    data = fetch_latest_data()
-    crises = check_crisis(data, config)
+    all_crises = []
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
-    if crises:
-        for c in crises:
-            print(c)
-    else:
-        print("Aucune crise détectée.")
+    for asset_name in parc:
+        table_name = asset_name.replace("-", "").replace("_", "")
+        try:
+            cursor.execute(f"SELECT cpu_usage, ram_usage, disk_usage, temp, users_count, timestamp FROM {table_name} ORDER BY timestamp DESC LIMIT 1")
+            row = cursor.fetchone()
+            
+            if not row: continue
+
+            # Données actuelles
+            data = {
+                "name": asset_name,
+                "cpu": float(row[0]),
+                "ram": float(row[1]),
+                "disk": float(row[2]),
+                "temp": float(row[3]),
+                "users": int(row[4]),
+                "time": row[5]
+            }
+
+            # Logique de détection
+            asset_crises = []
+            if data["cpu"] > config["cpu_threshold"]: asset_crises.append(f"CPU critique: {data['cpu']}%")
+            if data["ram"] > config["ram_threshold"]: asset_crises.append(f"RAM saturée: {data['ram']}%")
+            if data["disk"] > config["disk_threshold"]: asset_crises.append(f"Disque saturé : {data['disk']}%")
+            if data["temp"] > config["temp_threshold"]: asset_crises.append(f"Surchauffe: {data['temp']}°C")
+            if data["users"] > config["user_threshold"]: asset_crises.append(f"DDoS suspect: {data['users']} users")
+
+            # Check si le serveur répond encore
+            last_seen = datetime.strptime(data["time"], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() - last_seen > timedelta(minutes=config["max_delay_minutes"]):
+                asset_crises.append(f"HORS-LIGNE depuis {data['time']}")
+
+            if asset_crises:
+                all_crises.append({
+                    "asset": asset_name,
+                    "details": asset_crises,
+                    "time": data["time"]
+                })
+        except Exception as e:
+            print(f"Erreur check {asset_name}: {e}")
+
+    conn.close()
+    return all_crises

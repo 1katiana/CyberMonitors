@@ -12,8 +12,13 @@ __pycache__/
 code_monitoring/dashboard/static/graphs/*.svg
 Data/*.db
 !Data/.gitkeep
+*.db-journal
+*.db-shm
+*.db-wal
 
 # Temporary/Old versions
 dashboard0/
 dashboard1/
 dashboard2/
+#mot de passe 
+.env

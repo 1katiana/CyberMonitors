@@ -1,9 +1,9 @@
 {
-    "ram_threshold": 99,
-    "disk_threshold": 99,
-    "cpu_threshold": 85,
-    "user_threshold": 7,
-    "process_threshold": 300,
-    "max_delay_minutes": 30
-  }
-  
+  "ram_threshold": 90,
+  "disk_threshold": 90,
+  "cpu_threshold": 85,
+  "temp_threshold": 75,
+  "user_threshold": 10,
+  "max_delay_minutes": 5,
+  "alert_recipients": [ "katianaaoudia23@gmail.com", "dricoarnaud6@gmail.com" ]
+}

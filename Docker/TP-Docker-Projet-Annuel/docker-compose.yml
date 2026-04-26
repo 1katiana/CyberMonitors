@@ -26,9 +26,14 @@ services:
       - ../../Data:/app/data
     networks:
       - monitoring-net
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-    # On lance bien app.py (le serveur Flask)
+      - PYTHONPATH=/app/code_monitoring 
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
+      - FLASK_SECRET_KEY=${FLASK_SECRET}
+    
     command: python /app/code_monitoring/dashboard/app.py 
     depends_on:
       - cyber-monitor-collector
