@@ -16,6 +16,10 @@ Data/*.db
 *.db-shm
 *.db-wal
 
+# Sauvegardes
+Data/backups/
+*.sqlite
+
 # Temporary/Old versions
 dashboard0/
 dashboard1/

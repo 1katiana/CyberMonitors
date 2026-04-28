@@ -24,6 +24,7 @@ services:
     volumes:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
     env_file:
@@ -33,7 +34,6 @@ services:
       - PYTHONPATH=/app/code_monitoring 
       - EMAIL_PASSWORD=${EMAIL_PASSWORD}
       - FLASK_SECRET_KEY=${FLASK_SECRET}
-    
     command: python /app/code_monitoring/dashboard/app.py 
     depends_on:
       - cyber-monitor-collector
@@ -45,6 +45,7 @@ services:
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-01
+    container_name: linux-srv-1
     volumes:
       - ./scripts:/scripts
     networks:
@@ -56,6 +57,7 @@ services:
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-02
+    container_name: linux-srv-2
     volumes:
       - ./scripts:/scripts
     networks:
@@ -68,6 +70,7 @@ services:
       context: .
       dockerfile: Dockerfile.windows
     tty: true
+    container_name: win-wkst-1
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-01
@@ -85,6 +88,7 @@ services:
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-02
+    container_name: win-wkst-2
     volumes:
       - ./scripts:/scripts
     networks:
@@ -100,6 +104,7 @@ services:
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=SRV-WIN-CORE
+    container_name: win-srv-indispensable
     volumes:
       - ./scripts:/scripts
     networks:

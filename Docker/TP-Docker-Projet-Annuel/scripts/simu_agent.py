@@ -3,6 +3,8 @@ import os
 import random
 import threading
 import sys
+import sqlite3
+import requests
 from flask import Flask, jsonify, request
 
 # *** CONFIGURATION ***
@@ -78,33 +80,69 @@ def run_simulation_loop():
         stats["temp"] = internal_state["temp_current"]
         stats["users"] = users_to_show
 
+        # On garde les print pour les logs Docker que Katiana surveille
         print(f"[{machine}] STATS > CPU: {stats['cpu']:.1f}% | GPU: {stats['gpu']:.1f}% | RAM: {stats['ram']:.1f}% | DISK: {stats['disk']:.1f}% | TEMP: {stats['temp']:.1f}C | USR: {stats['users']}", flush=True)
         time.sleep(2)
+
+# *** ACTION DE NETTOYAGE PROFOND (PRIORITE 1) ***
+def perform_full_clean():
+    internal_state["is_repairing"] = True
+    print(f"[{machine}] [CLEAN] Lancement du nettoyage systeme et BDD...", flush=True)
+    
+    # 1. Reset de l'etat local (ce que tu avais deja)
+    internal_state["disk_used_gb"] = hw["disk_total_gb"] * 0.2
+    internal_state["chrome_tabs"] = 0
+    internal_state["is_mining"] = False
+    internal_state["is_ransomware"] = False
+    internal_state["is_ddos"] = False
+    internal_state["cpu_target"] = 5.0
+    
+    # 2. Nettoyage de la base de données de Katiana
+    # Dans le conteneur, Data est généralement monté sur /Data
+    db_path = "/Data/monitoring.db"
+    try:
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            # On supprime les alertes critiques pour cette machine
+            # Note : Adapter le nom de la table si necessaire
+            cursor.execute("DELETE FROM logs WHERE machine_name = ? AND status = 'CRITIQUE'", (machine,))
+            conn.commit()
+            conn.close()
+            print(f"[{machine}] [CLEAN] BDD mise a jour.", flush=True)
+    except Exception as e:
+        print(f"[{machine}] [CLEAN] Erreur BDD: {e}", flush=True)
+
+    # 3. Signal au Dashboard (Reset visuel)
+    try:
+        # On utilise le nom du service Docker 'dashboard' défini dans le compose
+        requests.post("http://dashboard:8050/api/reset", timeout=2)
+        print(f"[{machine}] [CLEAN] Signal de reset envoye au Dashboard.", flush=True)
+    except:
+        pass
+
+    time.sleep(2)
+    internal_state["is_repairing"] = False
+    print(f"[{machine}] [CLEAN] Systeme propre et synchronise.", flush=True)
 
 # *** DEFENSES ***
 def perform_antivirus():
     internal_state["is_repairing"] = True
-    print(f"[{machine}] [ANTIVIRUS] Analyse en cours (0%)...", flush=True)
-    time.sleep(3)
-    print(f"[{machine}] [ANTIVIRUS] Destruction des malwares en cours...", flush=True)
+    print(f"[{machine}] [ANTIVIRUS] Analyse en cours...", flush=True)
     time.sleep(3)
     internal_state["is_mining"] = False
     internal_state["is_ransomware"] = False
     internal_state["cpu_target"] = 5.0
-    print(f"[{machine}] [ANTIVIRUS] Termine. Systeme OK.", flush=True)
-    time.sleep(2)
+    print(f"[{machine}] [ANTIVIRUS] Menaces eliminees.", flush=True)
     internal_state["is_repairing"] = False
 
 def perform_ddos_mitigation():
     internal_state["is_repairing"] = True
-    print(f"[{machine}] [FIREWALL] Analyse du trafic entrant anormal...", flush=True)
-    time.sleep(3)
-    print(f"[{machine}] [FIREWALL] Routage des requetes vers un trou noir (Sinkhole)...", flush=True)
+    print(f"[{machine}] [FIREWALL] Filtrage des paquets suspect...", flush=True)
     time.sleep(3)
     internal_state["is_ddos"] = False
     internal_state["cpu_target"] = 5.0
-    print(f"[{machine}] [FIREWALL] Trafic rejete. Charge reseau normalisee.", flush=True)
-    time.sleep(2)
+    print(f"[{machine}] [FIREWALL] Attaque bloquee.", flush=True)
     internal_state["is_repairing"] = False
 
 # *** API ***
@@ -124,7 +162,7 @@ def trigger_api():
     if action == "open_chrome":
         internal_state["chrome_tabs"] += 3
     elif action == "close_chrome":
-        if internal_state["chrome_tabs"] > 0: internal_state["chrome_tabs"] = 0
+        internal_state["chrome_tabs"] = 0
     elif action == "virus_on":
         internal_state["is_mining"] = True
     elif action == "ransomware":
@@ -136,8 +174,8 @@ def trigger_api():
     elif action == "ddos_off":
         threading.Thread(target=perform_ddos_mitigation).start()
     elif action == "clean":
-        internal_state["disk_used_gb"] = hw["disk_total_gb"] * 0.2
-        internal_state["chrome_tabs"] = 0
+        # On lance le nettoyage complet en background
+        threading.Thread(target=perform_full_clean).start()
     return "OK"
 
 if __name__ == "__main__":
@@ -147,5 +185,4 @@ if __name__ == "__main__":
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
         app.run(host='0.0.0.0', port=5000)
     except KeyboardInterrupt:
-        print(f"\n[{machine}] Shutdown. Au revoir !")
         sys.exit(0)
