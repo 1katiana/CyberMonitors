@@ -9,18 +9,20 @@ import hashlib
 import shutil
 import re
 import json
-import logging # Module de journalisation
+import logging
+import secrets
+import string
 
 # *** CONFIGURATION DES LOGS ***
 current_dir = os.path.dirname(os.path.abspath(__file__))
 log_dir = os.path.normpath(os.path.join(current_dir, "..", "..", "..", "Data", "Logs"))
-os.makedirs(log_dir, exist_ok=True) # S'assure que le dossier existe
+os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "Logs_Console_Admin.log")
 
 logging.basicConfig(
     filename=log_file,
     level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
@@ -30,6 +32,34 @@ C_OK = '\033[92m'
 C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
+
+USER_DATA_PATH = os.path.normpath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", "users_docker.json"))
+
+# *** NOUVEAU : SYSTEME DE VERROU (MUTEX) POUR LE JSON ***
+class DBLock:
+    def __init__(self, path, timeout=5):
+        self.lockfile = path + ".lock"
+        self.timeout = timeout
+        self.fd = None
+
+    def __enter__(self):
+        start = time.time()
+        while time.time() - start < self.timeout:
+            try:
+                # O_CREAT | O_EXCL garantit une creation atomique. Echec si le fichier existe deja.
+                self.fd = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                return self
+            except FileExistsError:
+                time.sleep(0.1)
+        raise Exception("Timeout : La base de donnees est actuellement utilisee par un autre processus.")
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self.fd:
+                os.close(self.fd)
+            os.remove(self.lockfile)
+        except Exception:
+            pass
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -59,72 +89,298 @@ def get_machines():
                     machines.append({"name": name, "status": status})
     return machines
 
-def authenticate():
-    user_data_path = os.path.normpath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", "users_docker.json"))
+def check_password_complexity(pwd):
+    missing = []
+    if len(pwd) < 6:
+        missing.append("6 caracteres minimum")
+    if not any(c.isupper() for c in pwd):
+        missing.append("une majuscule")
+    if not any(c.islower() for c in pwd):
+        missing.append("une minuscule")
+    if not any(c.isdigit() for c in pwd):
+        missing.append("un chiffre")
+    if not any(c in string.punctuation for c in pwd):
+        missing.append("un symbole specifique (!@#$%^&*...)")
+    return missing
 
+def authenticate():
     for attempt in range(3, 0, -1):
         clear_screen()
         print(f"{C_WARN}*** ACCES RESTREINT : AUTHENTIFICATION REQUISE ***{C_END}")
         print(f"Connexion a la Master Console.\n")
         
-        user = input("Identifiant : ").strip()
+        user = input("Identifiant : ").strip().lower()
         pwd = getpass.getpass("Mot de passe : ").strip()
         
         print()
         
-        # *** GESTION DES ERREURS SERIE 100 : FICHIER JSON ***
         try:
-            with open(user_data_path, 'r') as f:
-                valid_users = json.load(f)
+            with DBLock(USER_DATA_PATH):
+                with open(USER_DATA_PATH, 'r') as f:
+                    valid_users = json.load(f)
         except FileNotFoundError:
             print(f"{C_DANGER}[!] ERREUR 101 : Le fichier users_docker.json est introuvable.{C_END}")
-            logging.error(f"ERREUR 101 : Fichier introuvable ({user_data_path})")
-            time.sleep(4)
-            return None, None
-        except json.JSONDecodeError as e:
-            print(f"{C_DANGER}[!] ERREUR 102 : Fichier JSON corrompu (Erreur de syntaxe).{C_END}")
-            logging.error(f"ERREUR 102 : Syntaxe JSON invalide. Details: {e}")
             time.sleep(4)
             return None, None
         except Exception as e:
-            print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base des utilisateurs.{C_END}")
-            logging.error(f"ERREUR 100 : Inconnue. Details: {e}")
+            print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base (Verrouillee ou corrompue). Details: {e}{C_END}")
             time.sleep(4)
             return None, None
         
         hashed_pwd = hashlib.sha256(pwd.encode('utf-8')).hexdigest()
 
-        # *** GESTION DES ERREURS SERIE 200 : AUTHENTIFICATION ***
-        if user not in valid_users:
-            print(f"{C_DANGER}[!] ERREUR 201 : Utilisateur '{user}' introuvable dans la base.{C_END}")
-            logging.warning(f"Tentative ECHOUEE (201) - Compte inexistant: {user}")
+        if user not in valid_users or valid_users[user].get("password") != hashed_pwd:
+            print(f"{C_DANGER}[!] ERREUR 200 : Identifiants incorrects.{C_END}")
+            logging.warning(f"Tentative ECHOUEE (200) Identifiants incorrects pour: {user}")
             if attempt > 1:
                 print(f"{C_WARN}Il vous reste {attempt - 1} essai(s).{C_END}")
                 time.sleep(2)
                 continue
             else:
                 print(f"{C_DANGER}[!] ACCES REFUSE. Incident de securite enregistre.{C_END}")
-                logging.error(f"ACCES BLOQUE - Multiples echecs (201) pour : {user}")
                 time.sleep(2)
                 return None, None
 
-        if valid_users[user].get("password") != hashed_pwd:
-            print(f"{C_DANGER}[!] ERREUR 202 : Mot de passe incorrect pour '{user}'.{C_END}")
-            logging.warning(f"Tentative ECHOUEE (202) - Mauvais mot de passe pour: {user}")
-            if attempt > 1:
-                print(f"{C_WARN}Il vous reste {attempt - 1} essai(s).{C_END}")
-                time.sleep(2)
-                continue
-            else:
-                print(f"{C_DANGER}[!] ACCES REFUSE. Incident de securite enregistre.{C_END}")
-                logging.error(f"ACCES BLOQUE - Multiples echecs (202) pour : {user}")
-                time.sleep(2)
+        if valid_users[user].get("force_reset"):
+            print(f"\n{C_WARN}[!] PREMIERE CONNEXION : Vous devez modifier votre mot de passe.{C_END}")
+            while True:
+                new_pwd = getpass.getpass("\nNouveau mot de passe : ").strip()
+                missing = check_password_complexity(new_pwd)
+                if missing:
+                    print(f"{C_DANGER}Mot de passe invalide. Il manque : {', '.join(missing)}{C_END}")
+                    continue
+                
+                confirm = getpass.getpass("Confirmez le mot de passe : ").strip()
+                if new_pwd != confirm:
+                    print(f"{C_DANGER}Les mots de passe ne correspondent pas. Reessayez.{C_END}")
+                    continue
+                
+                new_hashed = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
+                if new_hashed == hashed_pwd:
+                    print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}")
+                    continue
+                
+                break
+
+            try:
+                # On reverrouille pour ecrire la modification de maniere securisee
+                with DBLock(USER_DATA_PATH):
+                    with open(USER_DATA_PATH, 'r') as f:
+                        fresh_users = json.load(f)
+                    
+                    fresh_users[user]["password"] = new_hashed
+                    fresh_users[user]["force_reset"] = False
+                    
+                    with open(USER_DATA_PATH, 'w') as f:
+                        json.dump(fresh_users, f, indent=4)
+                        
+                print(f"{C_OK}[+] Mot de passe mis a jour avec succes.{C_END}")
+                logging.info(f"[{user}] A mis a jour son mot de passe initial.")
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"{C_DANGER}Erreur lors de la sauvegarde : {e}{C_END}")
+                time.sleep(3)
                 return None, None
 
-        # Si tout est OK
         role = valid_users[user].get("role", "user")
-        logging.info(f"Connexion REUSSIE - Utilisateur: {user} | Role: {role}")
+        logging.info(f"Connexion REUSSIE Utilisateur: {user} | Role: {role}")
         return user, role
+
+def manage_users(current_admin):
+    while True:
+        clear_screen()
+        print(f"{C_BASE}*** GESTION DES UTILISATEURS (Admin: {current_admin}) ***{C_END}\n")
+        
+        try:
+            with DBLock(USER_DATA_PATH):
+                with open(USER_DATA_PATH, 'r') as f:
+                    users = json.load(f)
+        except Exception as e:
+            print(f"{C_DANGER}Erreur de lecture du fichier JSON (Base verrouillee) : {e}{C_END}")
+            time.sleep(3)
+            break
+
+        print(f"{'Utilisateur':<15} | {'Role':<10} | {'Reset requis':<12}")
+        print("*" * 45)
+        for u, data in users.items():
+            needs_reset = "Oui" if data.get("force_reset") else "Non"
+            print(f"{u:<15} | {data.get('role', 'user'):<10} | {needs_reset:<12}")
+        
+        print(f"\n1. {C_OK}Ajouter un utilisateur{C_END}")
+        print(f"2. {C_DANGER}Supprimer un utilisateur{C_END}")
+        print("0. Retour")
+        
+        choice = input("\nAction : ").strip()
+
+        if choice == '1':
+            clear_screen()
+            print(f"{C_OK}*** AJOUTER UN NOUVEL UTILISATEUR ***{C_END}\n")
+            print(f"{C_WARN}Pour des raisons de securite, veuillez vous authentifier.{C_END}")
+            admin_pwd = getpass.getpass(f"Mot de passe de {current_admin} (ou '0' pour annuler) : ").strip()
+            
+            if admin_pwd == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+
+            admin_hash = hashlib.sha256(admin_pwd.encode('utf-8')).hexdigest()
+            if admin_hash != users[current_admin].get("password"):
+                print(f"{C_DANGER}[!] Mot de passe incorrect. Creation annulee.{C_END}")
+                time.sleep(2)
+                continue
+
+            new_user = ""
+            while True:
+                new_user = input("\n1. Nom de l'utilisateur (ou '0' pour annuler) : ").strip().lower()
+                if new_user == '0':
+                    break
+                if not new_user or new_user in users:
+                    print(f"{C_WARN}Nom invalide ou utilisateur deja existant. Reessayez.{C_END}")
+                    continue
+                break
+            
+            if new_user == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+
+            new_role = ""
+            while True:
+                new_role = input("\n2. Role (admin/moniteur/user) ['0' annuler] : ").strip().lower()
+                if new_role == '0':
+                    break
+                if new_role not in ['admin', 'user', 'moniteur', '']:
+                    print(f"{C_WARN}Role non reconnu. Veuillez choisir admin, moniteur ou user.{C_END}")
+                    continue
+                if new_role == '': 
+                    new_role = 'user'
+                break
+
+            if new_role == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+
+            pwd_choice = ""
+            while True:
+                print("\n3. Methodes de mot de passe :")
+                print("   1. Taper manuellement")
+                print("   2. Generer automatiquement")
+                print("   0. Annuler")
+                pwd_choice = input("Choix : ").strip()
+                if pwd_choice in ['0', '1', '2']:
+                    break
+                print(f"{C_DANGER}Veuillez taper 0, 1 ou 2.{C_END}")
+
+            if pwd_choice == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+
+            new_pwd = ""
+            if pwd_choice == '2':
+                alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+                while True:
+                    new_pwd = ''.join(secrets.choice(alphabet) for i in range(12))
+                    if not check_password_complexity(new_pwd):
+                        break
+                
+                print(f"\n{C_OK}Mot de passe genere : {new_pwd}{C_END}")
+                print(f"{C_WARN}ATTENTION : Notez-le, il ne s'affichera plus !{C_END}")
+                input("Appuyez sur Entree quand vous l'avez note...")
+            else:
+                cancel_pwd = False
+                while True:
+                    new_pwd = getpass.getpass("\nMot de passe temporaire ('0' pour annuler) : ").strip()
+                    if new_pwd == '0':
+                        cancel_pwd = True
+                        break
+                    
+                    missing = check_password_complexity(new_pwd)
+                    if missing:
+                        print(f"{C_DANGER}Mot de passe invalide. Il manque : {', '.join(missing)}{C_END}")
+                        continue
+                    
+                    confirm = getpass.getpass("Confirmez le mot de passe : ").strip()
+                    if new_pwd != confirm:
+                        print(f"{C_DANGER}Les mots de passe ne correspondent pas. Reessayez.{C_END}")
+                        continue
+                    break
+                
+                if cancel_pwd:
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(1)
+                    continue
+
+            hashed = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
+
+            try:
+                # Verrouillage avant de finaliser l'ajout (au cas ou le fichier a change pendant la frappe)
+                with DBLock(USER_DATA_PATH):
+                    with open(USER_DATA_PATH, 'r') as f:
+                        fresh_users = json.load(f)
+                    fresh_users[new_user] = {"password": hashed, "role": new_role, "force_reset": True}
+                    with open(USER_DATA_PATH, 'w') as f:
+                        json.dump(fresh_users, f, indent=4)
+                        
+                print(f"\n{C_OK}[+] Utilisateur '{new_user}' cree avec succes (Role: {new_role}).{C_END}")
+                logging.info(f"[{current_admin}] Creation du compte : {new_user} (Role: {new_role})")
+            except Exception as e:
+                print(f"\n{C_DANGER}Erreur de synchronisation base de donnees : {e}{C_END}")
+            time.sleep(2)
+
+        elif choice == '2':
+            clear_screen()
+            print(f"{C_DANGER}*** SUPPRIMER UN UTILISATEUR ***{C_END}\n")
+            
+            del_user = input("Nom de l'utilisateur a supprimer (ou '0' pour annuler) : ").strip().lower()
+            if del_user == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+            if del_user == current_admin:
+                print(f"{C_DANGER}Impossible de supprimer votre propre compte !{C_END}")
+                time.sleep(2)
+                continue
+            elif del_user not in users:
+                print(f"{C_WARN}Utilisateur introuvable.{C_END}")
+                time.sleep(1.5)
+                continue
+            
+            print(f"\n{C_WARN}Pour valider la suppression de '{del_user}', veuillez vous authentifier.{C_END}")
+            admin_pwd = getpass.getpass(f"Mot de passe de {current_admin} (ou '0' annuler) : ").strip()
+            if admin_pwd == '0':
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(1)
+                continue
+
+            admin_hash = hashlib.sha256(admin_pwd.encode('utf-8')).hexdigest()
+
+            if admin_hash != users[current_admin].get("password"):
+                print(f"{C_DANGER}[!] Mot de passe incorrect. Suppression annulee.{C_END}")
+                time.sleep(2)
+                continue
+
+            try:
+                # Verrouillage avant suppression definitive
+                with DBLock(USER_DATA_PATH):
+                    with open(USER_DATA_PATH, 'r') as f:
+                        fresh_users = json.load(f)
+                    
+                    if del_user in fresh_users:
+                        del fresh_users[del_user]
+                        with open(USER_DATA_PATH, 'w') as f:
+                            json.dump(fresh_users, f, indent=4)
+                        print(f"{C_OK}[-] Utilisateur '{del_user}' supprime avec succes.{C_END}")
+                        logging.info(f"[{current_admin}] Suppression du compte : {del_user}")
+                    else:
+                        print(f"{C_WARN}Utilisateur deja supprime par un autre processus.{C_END}")
+            except Exception as e:
+                print(f"{C_DANGER}Erreur de synchronisation JSON : {e}{C_END}")
+            time.sleep(2)
+
+        elif choice == '0':
+            break
 
 def capture_container_logs(container, q_out, proc_list):
     proc = subprocess.Popen(["docker", "logs", "-f", "--tail=20", container], 
@@ -165,7 +421,6 @@ def menu_actions(targets, current_user, current_role):
                 
         elif c == '2':
             if current_role != "admin":
-                logging.warning(f"[{current_user}] Tentative d'acces refuse (Hard Crash)")
                 continue
 
             clear_screen()
@@ -196,7 +451,6 @@ def menu_actions(targets, current_user, current_role):
             
         elif c == '3':
             if current_role != "admin":
-                logging.warning(f"[{current_user}] Tentative d'acces refuse (Power On)")
                 continue
 
             clear_screen()
@@ -227,7 +481,6 @@ def menu_actions(targets, current_user, current_role):
             
         elif c == '4':
             if current_role != "admin":
-                logging.warning(f"[{current_user}] Tentative d'acces refuse (Attaques)")
                 continue
 
             clear_screen()
@@ -266,6 +519,7 @@ def menu_actions(targets, current_user, current_role):
                 print(f"{C_OK}[OK] Ordre execute par {current_user}.{C_END}")
                 time.sleep(1)
             break
+            
         elif c == '0': break
 
 def main():
@@ -293,10 +547,12 @@ def main():
                 col = C_OK if "Up" in m['status'] else C_DANGER
                 print(f"{i+1}. {m['name']} {col}[{m['status']}]{C_END}")
             
-            if current_role == "user":
-                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'D' (Deconnexion), 'Q' (Quitter){C_END}")
-            else:
+            if current_role == "admin":
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+            elif current_role in ["moniteur", "monitoring"]:
                 print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+            else:
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'D' (Deconnexion), 'Q' (Quitter){C_END}")
                 
             choice = input(f"\n{C_WARN}Selection : {C_END}").lower().strip()
             
@@ -311,6 +567,10 @@ def main():
                 time.sleep(1)
                 break 
                 
+            if choice == 'u' and current_role == 'admin':
+                manage_users(current_user)
+                continue
+
             if choice == 'l':
                 if current_role == "user":
                     logging.warning(f"[{current_user}] Tentative refusee d'afficher les logs en direct.")
