@@ -150,7 +150,8 @@ def docker_action(container_name, action):
     except Exception as e:
         return False, str(e)
 
-@app.route("/api/_internal_docker/<name>/<action>")
+# AJOUT DE methods=['POST'] ICI
+@app.route("/api/_internal_docker/<name>/<action>", methods=['POST'])
 def internal_docker(name, action):
     """Route invisible utilisee par le JavaScript pour executer l'action en tâche de fond"""
     if name not in PARC_INFORMATIQUE or action not in ["start", "stop", "restart"]:
@@ -159,7 +160,8 @@ def internal_docker(name, action):
     success, details = docker_action(name, action)
     return jsonify({"success": success, "details": details})
 
-@app.route("/api/machine/<targets>/<action>")
+# AJOUT DE methods=['POST'] ICI AUSSI
+@app.route("/api/machine/<targets>/<action>", methods=['POST'])
 def control_machine(targets, action):
     if action not in ["start", "stop", "restart"]:
         return "Erreur : Action interdite", 400
@@ -203,7 +205,7 @@ def control_machine(targets, action):
         <div class="card">
           <h2>Protocole : {action.upper()}</h2>
           <table id="machine-table">
-            </table>
+          </table>
           <div id="timer-container" class="timer-box">
             Tâches terminées. Retour dans <span id="seconds">5</span> secondes...
           </div>
@@ -236,7 +238,10 @@ def control_machine(targets, action):
               statusCell.style.color = "#17a2b8";
               
               try {{
-                const response = await fetch(`/api/_internal_docker/${{m}}/${{action}}`);
+                // AJOUT DE LA METHODE POST DANS LE FETCH ICI
+                const response = await fetch(`/api/_internal_docker/${{m}}/${{action}}`, {{
+                    method: 'POST'
+                }});
                 const data = await response.json();
                 
                 if (data.success) {{

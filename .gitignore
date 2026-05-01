@@ -20,9 +20,16 @@ Data/*.db
 Data/backups/
 *.sqlite
 
+# Comptes utilisateurs et mots de passe
+Data/Users/*.json
+!Data/Users/.gitkeep
+
 # Temporary/Old versions
 dashboard0/
 dashboard1/
 dashboard2/
 #mot de passe 
 .env
+
+# Logs
+Data/Logs/*.log

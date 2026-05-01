@@ -1,5 +1,5 @@
 services:
-  # --- COLLECTEUR (Le cœur qui remplit la base) ---
+  # --- COLLECTEUR (Le coeur qui remplit la base) ---
   cyber-monitor-collector:
     build:
       context: .
@@ -14,6 +14,7 @@ services:
       - PYTHONUNBUFFERED=1 
     command: python /app/code_monitoring/sonde/collecteur.py
     restart: always
+
   # --- DASHBOARD (L'interface visuelle) ---
   cyber-dashboard:
     build:
@@ -48,6 +49,7 @@ services:
     container_name: linux-srv-1
     volumes:
       - ./scripts:/scripts
+      - ../../Data:/app/Data
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
@@ -60,6 +62,7 @@ services:
     container_name: linux-srv-2
     volumes:
       - ./scripts:/scripts
+      - ../../Data:/app/Data
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
@@ -76,6 +79,7 @@ services:
       - MACHINE_NAME=WKST-WIN-01
     volumes:
       - ./scripts:/scripts
+      - ../../Data:/app/Data
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
@@ -91,6 +95,7 @@ services:
     container_name: win-wkst-2
     volumes:
       - ./scripts:/scripts
+      - ../../Data:/app/Data
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
@@ -107,6 +112,7 @@ services:
     container_name: win-srv-indispensable
     volumes:
       - ./scripts:/scripts
+      - ../../Data:/app/Data
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py

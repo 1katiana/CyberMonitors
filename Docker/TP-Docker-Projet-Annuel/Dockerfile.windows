@@ -1,17 +1,20 @@
 FROM python:3.9-slim-bullseye
 
-RUN apt-get update && apt-get install -y sqlite3 wget apt-transport-https software-properties-common openssh-server && rm -rf /var/lib/apt/lists/*
+# Ajout de 'jq' + PowerShell
+RUN apt-get update && apt-get install -y sqlite3 wget apt-transport-https software-properties-common openssh-server jq && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /var/run/sshd
 RUN echo 'root:root' | chpasswd
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-
-RUN useradd -m -s /bin/bash Arnaud && echo "Arnaud:CyberMonitor2026!" | chpasswd
-RUN useradd -m -s /bin/bash Katiana && echo "Katiana:CyberMonitor2026!" | chpasswd
-RUN useradd -m -s /bin/bash Test && echo "Test:Test!" | chpasswd
-
 RUN wget -q "https://packages.microsoft.com/config/debian/11/packages-microsoft-prod.deb" && dpkg -i packages-microsoft-prod.deb && apt-get update && apt-get install -y powershell && rm -rf /var/lib/apt/lists/* && rm packages-microsoft-prod.deb
+
+# PIEGE INTELLIGENT
+RUN mv /bin/sh /bin/sh.real && \
+    mv /bin/bash /bin/bash.real && \
+    printf '#!/bin/sh.real\nif [ "$INTERNAL_LOGGED_IN" != "1" ] && [ $# -eq 0 ] && [ -t 0 ]; then\n  exec python3 /scripts/internal_login.py\nelse\n  exec /bin/sh.real "$@"\nfi\n' > /bin/sh && \
+    printf '#!/bin/sh.real\nif [ "$INTERNAL_LOGGED_IN" != "1" ] && [ $# -eq 0 ] && [ -t 0 ]; then\n  exec python3 /scripts/internal_login.py\nelse\n  exec /bin/bash.real "$@"\nfi\n' > /bin/bash && \
+    chmod +x /bin/sh /bin/bash
 
 WORKDIR /app
 COPY requirements.txt .
@@ -20,4 +23,4 @@ COPY . .
 
 EXPOSE 22 5000
 
-ENTRYPOINT ["/bin/sh", "-c", "service ssh start && exec \"$@\"", "--"]
+ENTRYPOINT ["/bin/bash.real", "-c", "service ssh start && exec \"$@\"", "--"]
