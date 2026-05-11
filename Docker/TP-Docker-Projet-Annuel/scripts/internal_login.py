@@ -1,5 +1,5 @@
 import getpass
-import hashlib
+import bcrypt
 import os
 import sys
 import time
@@ -15,7 +15,6 @@ C_WARN = '\033[93m'
 C_BASE = '\033[96m'
 C_END = '\033[0m'
 
-# *** VERROU DE BASE DE DONNEES ***
 class DBLock:
     def __init__(self, path, timeout=5):
         self.lockfile = path + ".lock"
@@ -60,7 +59,6 @@ def start_internal_login():
         pwd_input = getpass.getpass("Mot de passe : ").strip()
         print()
         
-        # *** GESTION DES ERREURS SERIE 100 : FICHIER JSON ***
         try:
             with DBLock(json_path):
                 with open(json_path, 'r') as f:
@@ -76,11 +74,16 @@ def start_internal_login():
             time.sleep(3)
             sys.exit(1)
 
-        hashed = hashlib.sha256(pwd_input.encode('utf-8')).hexdigest()
+        # Verification Bcrypt securisee
+        stored_hash_str = accounts.get(user, {}).get("password", "")
+        stored_hash = stored_hash_str.encode('utf-8')
+        
+        try:
+            password_match = bcrypt.checkpw(pwd_input.encode('utf-8'), stored_hash)
+        except ValueError:
+            password_match = False # Securite si le hash n'est pas au format bcrypt
 
-        # *** GESTION DES ERREURS SERIE 200 : AUTHENTIFICATION (ANTI-ENUMERATION) ***
-        if user not in accounts or accounts[user].get("password") != hashed:
-            # Check specifique pour le Reset IT
+        if user not in accounts or not password_match:
             if user in accounts and accounts[user].get("reset_by_admin"):
                 print(f"{C_DANGER}[!] ACCES REFUSE : Votre mot de passe a ete reinitialise.{C_END}")
                 print(f"{C_WARN}Veuillez contacter l'administrateur ou le support IT pour obtenir votre mot de passe temporaire.{C_END}")
@@ -97,14 +100,12 @@ def start_internal_login():
                 time.sleep(2)
                 sys.exit(1)
 
-        # *** VERIFICATION DU STATUT BLOQUE ***
         if accounts[user].get("blocked", False):
             print(f"{C_DANGER}[!] ERREUR 403 : ACCES REFUSE.{C_END}")
             print(f"{C_WARN}Ce compte a ete suspendu par un administrateur.{C_END}")
             time.sleep(3)
             sys.exit(1)
 
-        # *** GESTION DU FORCE RESET ***
         if accounts[user].get("force_reset"):
             print(f"{C_WARN}[!] PREMIERE CONNEXION OU MISE A JOUR DE SECURITE.{C_END}")
             print(f"Vous devez obligatoirement modifier votre mot de passe.\n")
@@ -124,11 +125,15 @@ def start_internal_login():
                     time.sleep(2)
                     continue
                 
-                new_hashed = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
-                if new_hashed == hashed:
-                    print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}\n")
-                    time.sleep(2)
-                    continue
+                try:
+                    if bcrypt.checkpw(new_pwd.encode('utf-8'), stored_hash):
+                        print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}\n")
+                        time.sleep(2)
+                        continue
+                except ValueError:
+                    pass 
+
+                new_hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 break
 
             try:
@@ -145,7 +150,6 @@ def start_internal_login():
                 time.sleep(3)
                 sys.exit(1)
 
-        # Si on passe tout, c'est un succes !
         print(f"{C_OK}[+] Authentification reussie.{C_END}")
         time.sleep(1)
         
@@ -154,7 +158,6 @@ def start_internal_login():
         os_type = os.environ.get('OS_TYPE', 'Linux')
         shell_path = "/usr/bin/pwsh" if os_type == "Windows" else "/bin/bash.real"
         
-        # *** GESTION DES ERREURS SERIE 300 : SYSTEME LINUX ***
         try:
             user_info = pwd.getpwnam(user)
             print(f"{C_BASE}[*] Espace local detecte. Chargement du profil '{user}'...{C_END}")
@@ -199,7 +202,6 @@ def start_internal_login():
             os.setuid(user_info.pw_uid)
             os.chdir(user_info.pw_dir)
 
-        # *** GESTION DES ERREURS SERIE 400 : SHELL ***
         try:
             os.execlpe(shell_path, shell_path, env)
         except Exception as e:

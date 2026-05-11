@@ -5,3 +5,4 @@ psutil
 plotly
 pandas
 cryptography
+bcrypt

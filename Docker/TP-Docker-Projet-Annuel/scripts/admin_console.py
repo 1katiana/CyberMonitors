@@ -5,7 +5,7 @@ import sys
 import threading
 import queue
 import getpass
-import hashlib
+import bcrypt
 import shutil
 import re
 import json
@@ -178,9 +178,15 @@ def authenticate():
         except Exception as e:
             print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base. Details: {e}{C_END}"); time.sleep(4); return None, None
         
-        hashed_pwd = hashlib.sha256(pwd.encode('utf-8')).hexdigest()
+        stored_hash_str = valid_users.get(user, {}).get("password", "")
+        stored_hash = stored_hash_str.encode('utf-8')
+        
+        try:
+            password_match = bcrypt.checkpw(pwd.encode('utf-8'), stored_hash)
+        except ValueError:
+            password_match = False
 
-        if user not in valid_users or valid_users[user].get("password") != hashed_pwd:
+        if user not in valid_users or not password_match:
             if user in valid_users and valid_users[user].get("reset_by_admin"):
                 print(f"{C_DANGER}[!] ACCES REFUSE : Votre mot de passe a ete reinitialise.{C_END}")
                 print(f"{C_WARN}Veuillez contacter l'administrateur ou le support IT pour obtenir votre mot de passe temporaire.{C_END}")
@@ -212,9 +218,12 @@ def authenticate():
                 if new_pwd != confirm:
                     print(f"{C_DANGER}Les mots de passe ne correspondent pas. Reessayez.{C_END}"); continue
                 
-                new_hashed = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
-                if new_hashed == hashed_pwd:
-                    print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}"); continue
+                try:
+                    if bcrypt.checkpw(new_pwd.encode('utf-8'), stored_hash):
+                        print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}"); continue
+                except ValueError: pass
+                
+                new_hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 break
 
             try:
@@ -269,7 +278,14 @@ def manage_users(current_admin):
             admin_pwd = getpass.getpass(f"Mot de passe de {current_admin} (ou '0' pour annuler) : ").strip()
             
             if admin_pwd == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
-            if hashlib.sha256(admin_pwd.encode('utf-8')).hexdigest() != users[current_admin].get("password"):
+            
+            stored_admin_hash = users[current_admin].get("password", "").encode('utf-8')
+            try:
+                admin_match = bcrypt.checkpw(admin_pwd.encode('utf-8'), stored_admin_hash)
+            except ValueError:
+                admin_match = False
+                
+            if not admin_match:
                 print(f"{C_DANGER}[!] Mot de passe incorrect.{C_END}"); time.sleep(2); continue
 
             # === AJOUT ===
@@ -390,7 +406,7 @@ def manage_users(current_admin):
                     break
                 if new_role == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
 
-                hashed = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
+                hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
                 try:
                     with DBLock(USER_DATA_PATH):
@@ -556,7 +572,7 @@ def manage_users(current_admin):
                                 break
                             if cancel_pwd: continue
                             
-                        field_updates["password"] = hashlib.sha256(new_pwd.encode('utf-8')).hexdigest()
+                        field_updates["password"] = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                         field_updates["force_reset"] = True
                         field_updates["reset_by_admin"] = True
                         logging.warning(f"[{current_admin}] a REINITIALISE le mot de passe de {target}")
