@@ -7,6 +7,7 @@ import pwd
 import json
 import subprocess
 import string
+import shutil
 
 # *** DESIGN ***
 C_OK = '\033[92m'
@@ -156,7 +157,19 @@ def start_internal_login():
         role = accounts[user].get("role", "user")
         
         os_type = os.environ.get('OS_TYPE', 'Linux')
-        shell_path = "/usr/bin/pwsh" if os_type == "Windows" else "/bin/bash.real"
+        shell_path = "/bin/bash.real" # Shell de secours par defaut
+        
+        if os_type == "Windows":
+            pwsh_loc = shutil.which("pwsh")
+            if pwsh_loc and os.path.exists(pwsh_loc):
+                shell_path = pwsh_loc
+            elif os.path.exists("/opt/microsoft/powershell/7/pwsh"):
+                shell_path = "/opt/microsoft/powershell/7/pwsh"
+            elif os.path.exists("/usr/bin/pwsh"):
+                shell_path = "/usr/bin/pwsh"
+            else:
+                print(f"{C_WARN}[!] PowerShell introuvable. Chargement d'un terminal de secours...{C_END}")
+                time.sleep(2)
         
         try:
             user_info = pwd.getpwnam(user)
