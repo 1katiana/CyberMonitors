@@ -1,19 +1,86 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, render_template, abort, flash, session
+from flask import Flask, render_template, request, redirect, url_for, session, flash, abort
 import sqlite3
 import os
 import sys
+import bcrypt
+from functools import wraps
+import json
+from datetime import timedelta, datetime
 
-#  On ajoute le dossier parent au PATH 
+# On ajoute le dossier parent au PATH
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 app = Flask(__name__)
 
-#  pour session et flash (les alertes)
+# pour session et flash (les alertes)
 app.secret_key = os.environ.get('FLASK_SECRET', 'dev-key-very-weak')
 
+# GESTION SÉCURISÉE DES SESSIONS (CYBER)
+# Règle 1 : La session expire après 15 minutes d'inactivité
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=15)
+
+# Règle 2 : Le cookie est détruit dès qu'on ferme le navigateur
+# (Par défaut dans Flask, mais on force le comportement pour la sécurité)
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+
 DB_PATH = "/app/data/monitoring.db"
+JSON_PATH = "/app/data/Users/users_docker.json"
+
 PARC_INFORMATIQUE = ["linux-srv-1", "linux-srv-2", "win-wkst-1", "win-wkst-2", "win-srv-indispensable"]
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Si 'user' n'est pas enregistré dans la session Flask, on redirige vers le login
+        if "user" not in session:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# --- 2. LA ROUTE DE CONNEXION (LOGIN) ---
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if "user" in session:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        username = request.form.get("username").strip().lower()
+        password_input = request.form.get("password").strip()
+
+        try:
+            with open(JSON_PATH, "r") as f:
+                accounts = json.load(f)
+        except FileNotFoundError:
+            flash("Erreur : La base d'utilisateurs est introuvable.", "danger")
+            return render_template("login.html")
+
+        user_data = accounts.get(username)
+
+        if user_data and bcrypt.checkpw(password_input.encode('utf-8'), user_data["password"].encode('utf-8')):
+
+            if user_data.get("blocked"):
+                flash("Ce compte a été suspendu par un administrateur.", "danger")
+                return render_template("login.html")
+
+            # === AJOUT DE SÉCURITÉ ICI ===
+            # On dit à Flask que cette session doit suivre les règles d'expiration strictes
+            session.permanent = True 
+            
+            session["user"] = username
+            session["role"] = user_data.get("role", "user")
+            session["uuid"] = user_data.get("uuid")
+
+            return redirect(url_for("index"))
+        else:
+            flash("Identifiants incorrects.", "danger")
+
+    return render_template("login.html")
+# --- 3. LA ROUTE DE DECONNEXION (LOGOUT) ---
+@app.route("/logout")
+def logout():
+    session.clear() # On vide la session (efface le cookie)
+    return redirect(url_for("login"))
 
 def get_machine_data(machine_table, limit=10):
     conn = sqlite3.connect(DB_PATH)
@@ -27,16 +94,15 @@ def get_machine_data(machine_table, limit=10):
     finally:
         conn.close()
 
-
 @app.context_processor
 def inject_global_data():
     # On initialise une liste vide pour les crises
     global_crises = []
-    
+
     try:
         from detetction_de_crises.detection_de_crise import check_all_assets
         global_crises = check_all_assets(PARC_INFORMATIQUE)
-        
+
         # Logique d'envoi de mail (optionnelle ici ou dans l'index)
         if global_crises and not session.get('alert_sent'):
             from alertes.envoie_mail import send_combined_alert
@@ -44,7 +110,7 @@ def inject_global_data():
             session['alert_sent'] = True
         elif not global_crises:
             session.pop('alert_sent', None)
-            
+
     except Exception as e:
         print(f"Erreur monitoring global: {e}")
 
@@ -55,22 +121,23 @@ def inject_global_data():
     )
 
 @app.route("/")
+@login_required  # <-- Bloque l'accès si pas connecté
 def index():
     # CORRECTION DES IMPORTS AVEC LES DOSSIERS SPECIFIQUES
     try:
         # Import depuis le dossier 'detetction_de_crises'
         from detetction_de_crises.detection_de_crise import check_all_assets
         crises = check_all_assets(PARC_INFORMATIQUE)
-        
+
         if crises:
             # Import depuis le dossier 'alertes'
             from alertes.envoie_mail import send_combined_alert
-            
-            # Syst�me d'anti-spam : on n'envoie le mail qu'une fois par session
+
+            # Système d'anti-spam : on n'envoie le mail qu'une fois par session
             if not session.get('alert_sent'):
                 send_combined_alert(crises)
                 session['alert_sent'] = True
-            
+
             for c in crises:
                 flash(f"ALERTE sur {c['asset']}: {', '.join(c['details'])}", "danger")
     except Exception as e:
@@ -81,7 +148,7 @@ def index():
         generate_comparison_graphs(PARC_INFORMATIQUE)
     except Exception as e:
         print(f"Erreur generation accueil: {e}")
-        
+
     compare_graphs = {
         "Charge CPU Global": "graphs/compare_cpu.svg",
         "Usage RAM Global": "graphs/compare_ram.svg",
@@ -90,208 +157,57 @@ def index():
     }
     return render_template("index.html", graphs=compare_graphs)
 
+# --- 7. PAGE DE DÉTAIL PAR MACHINE (PROPRE ET UNIQUE) ---
 @app.route("/asset/<name>")
+@login_required  
 def asset_dashboard(name):
     if name not in PARC_INFORMATIQUE:
         abort(404)
-    
-    from visualisation import update_all_graphs
-    table_name = name.replace("-", "").replace("_", "")
-    update_all_graphs([name])
-    
-    graphs = {
-        "CPU": f"graphs/{table_name}_cpu.svg",
-        "RAM": f"graphs/{table_name}_ram.svg",
-        "Disque": f"graphs/{table_name}_disk.svg",
-        "Temperature": f"graphs/{table_name}_temp.svg",
-        "Utilisateurs": f"graphs/{table_name}_users.svg"
-    }
-    
-    data = {
-        "name": name,
-        "history": get_machine_data(table_name, limit=10),
-        "graphs": graphs
-    }
-    return render_template("asset.html", asset=data)
-    import socket
-from flask import jsonify
 
-#---------- Code Arnaud --------------
-
-import socket
-import json
-from flask import jsonify, request
-
-def docker_action(container_name, action):
-    """Communique avec le moteur Docker via le socket UNIX natif"""
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect("/var/run/docker.sock")
-        req = f"POST /containers/{container_name}/{action} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        sock.sendall(req.encode('utf-8'))
-        
-        response = b""
-        while True:
-            data = sock.recv(4096)
-            if not data:
-                break
-            response += data
-        sock.close()
-        
-        resp_str = response.decode('utf-8', errors='ignore')
-        # On renvoie le code exact au lieu de 'OK' pour éviter les bugs d'affichage
-        if "HTTP/1.1 204" in resp_str:
-            return True, "204"
-        elif "HTTP/1.1 304" in resp_str:
-            return True, "304"
-        else:
-            status_line = resp_str.split('\r\n')[0] if '\r\n' in resp_str else "Erreur Inconnue"
-            return False, status_line
+        from visualisation import update_all_graphs
+        table_name = name.replace("-", "").replace("_", "")
+        update_all_graphs([name])
+
+        graphs = {
+            "CPU": f"graphs/{table_name}_cpu.svg",
+            "RAM": f"graphs/{table_name}_ram.svg",
+            "Disque": f"graphs/{table_name}_disk.svg",
+            "Temperature": f"graphs/{table_name}_temp.svg",
+            "Utilisateurs": f"graphs/{table_name}_users.svg"
+        }
+
+        data = {
+            "name": name,
+            "history": get_machine_data(table_name, limit=10),
+            "graphs": graphs
+        }
     except Exception as e:
-        return False, str(e)
+        print(f"Erreur lors du traitement de l'asset {name}: {e}")
+        abort(500)
 
-# AJOUT DE methods=['POST'] ICI
-@app.route("/api/_internal_docker/<name>/<action>", methods=['POST'])
-def internal_docker(name, action):
-    """Route invisible utilisee par le JavaScript pour executer l'action en tâche de fond"""
-    if name not in PARC_INFORMATIQUE or action not in ["start", "stop", "restart"]:
-        return jsonify({"success": False, "details": "Requete invalide"})
-        
-    success, details = docker_action(name, action)
-    return jsonify({"success": success, "details": details})
+    # Ici on passe bien l'objet 'asset=data' dont le template HTML a besoin !
+    return render_template("asset.html", asset=data)
+@app.route("/profil")
+@login_required  # Sécurisé, il faut être connecté
+def profil():
+    try:
+        with open(JSON_PATH, "r") as f:
+            accounts = json.load(f)
+        user_info = accounts.get(session["user"], {})
+    except Exception:
+        user_info = {}
 
-# AJOUT DE methods=['POST'] ICI AUSSI
-@app.route("/api/machine/<targets>/<action>", methods=['POST'])
-def control_machine(targets, action):
-    if action not in ["start", "stop", "restart"]:
-        return "Erreur : Action interdite", 400
-        
-    # 1. Analyse des cibles
-    if targets.lower() in ["all", "toutes"]:
-        machines_a_traiter = PARC_INFORMATIQUE
-    else:
-        machines_a_traiter = [m.strip() for m in targets.split(',')]
-
-    # 2. Vérification des machines
-    machines_inconnues = [m for m in machines_a_traiter if m not in PARC_INFORMATIQUE]
-    if machines_inconnues:
-        return f"Erreur : Machines inconnues : {', '.join(machines_inconnues)}", 404
-
-    # 3. Préparation des variables pour la page
-    page_precedente = request.referrer or "/"
-    machines_json = json.dumps(machines_a_traiter)
-
-    # 4. Génération de l'interface dynamique
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Console d'Exécution</title>
-        <style>
-          body {{ background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
-          .card {{ background: #1e1e1e; padding: 30px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); width: 450px; border: 1px solid #333; }}
-          h2 {{ margin-top: 0; color: #00adb5; border-bottom: 1px solid #333; padding-bottom: 10px; text-align: center; }}
-          table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-          td {{ padding: 10px; border-bottom: 1px solid #2a2a2a; text-align: left; }}
-          .status {{ font-weight: bold; }}
-          .spinner-mini {{ display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }}
-          @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-          .timer-box {{ font-size: 0.9em; color: #888; background: #252525; padding: 10px; border-radius: 4px; text-align: center; display: none; }}
-          #seconds {{ color: #00adb5; font-weight: bold; font-size: 1.2em; }}
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>Protocole : {action.upper()}</h2>
-          <table id="machine-table">
-          </table>
-          <div id="timer-container" class="timer-box">
-            Tâches terminées. Retour dans <span id="seconds">5</span> secondes...
-          </div>
-        </div>
-
-        <script>
-          const machines = {machines_json};
-          const action = "{action}";
-          const fallbackUrl = "{page_precedente}";
-          
-          const table = document.getElementById('machine-table');
-          
-          // Initialisation du tableau avec le statut "En attente"
-          machines.forEach(m => {{
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-              <td>${{m}}</td>
-              <td id="status-${{m}}" class="status" style="color: #ffc107;">
-                <div class="spinner-mini"></div> En attente...
-              </td>
-            `;
-            table.appendChild(tr);
-          }});
-
-          async function processMachines() {{
-            // On traite chaque machine l'une après l'autre
-            for (const m of machines) {{
-              const statusCell = document.getElementById(`status-${{m}}`);
-              statusCell.innerHTML = `<div class="spinner-mini"></div> En cours...`;
-              statusCell.style.color = "#17a2b8";
-              
-              try {{
-                // AJOUT DE LA METHODE POST DANS LE FETCH ICI
-                const response = await fetch(`/api/_internal_docker/${{m}}/${{action}}`, {{
-                    method: 'POST'
-                }});
-                const data = await response.json();
-                
-                if (data.success) {{
-                    if (data.details === "204") {{
-                        statusCell.innerHTML = "✓ Action réussie";
-                        statusCell.style.color = "#28a745";
-                    }} else if (data.details === "304") {{
-                        statusCell.innerHTML = "✓ Déjà dans cet état";
-                        statusCell.style.color = "#00adb5";
-                    }} else {{
-                        statusCell.innerHTML = "✓ Terminé";
-                        statusCell.style.color = "#28a745";
-                    }}
-                }} else {{
-                    statusCell.innerHTML = `✗ Erreur (${{data.details}})`;
-                    statusCell.style.color = "#dc3545";
-                }}
-              }} catch (err) {{
-                statusCell.innerHTML = "✗ Erreur réseau";
-                statusCell.style.color = "#dc3545";
-              }}
-            }}
-            
-            // Lancement du compte à rebours 5s SEULEMENT quand tout est fini
-            startCountdown();
-          }}
-
-          function startCountdown() {{
-            document.getElementById('timer-container').style.display = 'block';
-            let timeLeft = 5;
-            const timerElement = document.getElementById('seconds');
-            const countdown = setInterval(() => {{
-              timeLeft--;
-              timerElement.innerText = timeLeft;
-              if (timeLeft <= 0) {{
-                clearInterval(countdown);
-                window.location.href = fallbackUrl;
-              }}
-            }}, 1000);
-          }}
-
-          // Démarrer automatiquement dès l'ouverture de la page
-          window.onload = processMachines;
-        </script>
-      </body>
-    </html>
-    """
-    return html
+    # Données nettoyées et envoyées à la page de profil
+    data = {
+        "username": session["user"],
+        "role": session.get("role", "user"),
+        # CORRECTION ICI : Extraction directe de l'UUID depuis le JSON d'Arnaud
+        "uuid": user_info.get("id", "Non défini"),
+        "blocked": user_info.get("blocked", False),
+        "force_reset": user_info.get("force_reset", False)
+    }
     
-#------------------------------------------------------
-
+    return render_template("profil.html", user_data=data)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8050, debug=True)

@@ -7,29 +7,48 @@
         body {
             font-family: 'Inter', 'Segoe UI', sans-serif;
             margin: 0;
-            background: #0a0b10; /* Fond très sombre */
+            background: #0a0b10; 
             color: #e0e0e0;
         }
 
         nav {
             background: #121420;
             border-bottom: 1px solid #1f2235;
-            padding: 1rem;
+            padding: 0.8rem 2rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
         }
 
-        .nav-links a {
-            color: #888;
-            text-decoration: none;
-            margin-left: 20px;
-            font-weight: 500;
+        .logo {
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #fff;
+            white-space: nowrap;
         }
 
-            .nav-links a:hover {
-                color: #00e5ff;
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+            .nav-links a {
+                color: #888;
+                text-decoration: none;
+                font-weight: 500;
+                transition: color 0.3s;
             }
+
+                .nav-links a:hover {
+                    color: #00e5ff;
+                }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
 
         .container {
             padding: 30px;
@@ -40,21 +59,39 @@
 </head>
 <body>
     <nav>
-        <div style="font-size: 1.5rem; font-weight: bold;">🛡️ Cyber Monitors</div>
+        <div class="logo">🛡️ Cyber Monitors</div>
+
         <div class="nav-links">
-            <a href="/">🏠 Accueil</a>
+            <a href="/">Accueil</a>
+
             {% for m in nav_machines %}
             <a href="/asset/{{ m }}">{{ m }}</a>
             {% endfor %}
         </div>
+
+        <div class="user-menu">
+            <a href="{{ url_for('profil') }}" style="display: flex; align-items: center; gap: 8px; color: #fff; text-decoration: none; background-color: #1a1c2e; padding: 6px 14px; border-radius: 20px; border: 1px solid #29292e; transition: 0.3s; font-size: 14px;"
+               onmouseover="this.style.borderColor='#00e5ff'" onmouseout="this.style.borderColor='#29292e'">
+                <span>👤 {{ session['user'] }}</span>
+                <span style="font-size: 11px; background-color: #0055ff; color: white; padding: 2px 6px; border-radius: 10px; text-transform: uppercase; font-weight: bold;">
+                    {{ session['role'] }}
+                </span>
+            </a>
+
+            <a href="{{ url_for('logout') }}" style="color: #a8a8b3; text-decoration: none; font-size: 14px; font-weight: bold; transition: color 0.3s;"
+               onmouseover="this.style.color='#f75a68'" onmouseout="this.style.color='#a8a8b3'">
+                Quitter 
+            </a>
+        </div>
     </nav>
-    <div class="container-fluid" style="margin-top: 10px;">
+
+    <div class="container-fluid" style="margin-top: 10px; padding: 0 20px;">
         {% if current_crises %}
         {% for crisis in current_crises %}
         <div class="alert-box-urgent">
             <span class="symbol">⚠️</span>
             <strong>ALERTE SUR {{ crisis.asset }} :</strong>
-            {{ crisis.details | join(', ') }}
+            &nbsp;{{ crisis.details | join(', ') }}
             <span class="time">({{ crisis.time.split(' ')[-1] }})</span>
         </div>
         {% endfor %}
@@ -93,7 +130,7 @@
             }
 
             50% {
-                transform: scale(1.01);
+                transform: scale(1.005);
                 box-shadow: 0 4px 25px rgba(255, 61, 0, 0.5);
             }
 
@@ -102,26 +139,7 @@
             }
         }
     </style>
-   
 
-    <style>
-        @keyframes shake {
-            0% {
-                transform: translateX(0);
-            }
-
-            25% {
-                transform: translateX(-5px);
-            }
-
-            50% {
-                transform: translateX(5px);
-            }
-
-            100% {
-                transform: translateX(0);
-            }
-    </style>
     <div class="container">
         {% block content %}{% endblock %}
     </div>
