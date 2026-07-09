@@ -13,11 +13,36 @@ import logging
 import secrets
 import string
 import uuid
+import glob
+import tempfile
+import zipfile
+import io
+import zlib  
+import stat  
+from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 
-# *** CONFIGURATION DES LOGS ***
+# *** NOUVEAU BLOC : DETECTION DOCKER ***
+IN_DOCKER = os.getenv("IS_MASTER_CONSOLE") == "1"
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
-log_dir = os.path.normpath(os.path.join(current_dir, "..", "..", "..", "Data", "Logs"))
+
+if IN_DOCKER:
+    ROOT_BACKUP_DIR  = "/infrastructure"
+    log_dir          = "/infrastructure/Data/Logs"
+    BACKUP_PREFS_DIR = "/infrastructure/code_monitoring/gestion de sauvegarde"
+    BACKUP_DATA_DIR  = "/infrastructure/Data/backups"
+    USER_DATA_PATH   = "/infrastructure/Data/Users/users_docker.json"
+    env_path         = "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env"
+else:
+    ROOT_BACKUP_DIR  = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
+    log_dir          = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "Logs"))
+    BACKUP_PREFS_DIR = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "code_monitoring", "gestion de sauvegarde"))
+    BACKUP_DATA_DIR  = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "backups"))
+    USER_DATA_PATH   = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", "users_docker.json"))
+    env_path         = os.path.abspath(os.path.join(current_dir, "..", ".env"))
+
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "Logs_Console_Admin.log")
 
@@ -28,25 +53,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# *** CHIFFREMENT (FERNET) ***
-SECRET_KEY = b"1fRmwCnDxGocFZciu2YKqeOD_BtSuj4rkqtH3-nhHuQ="
-try:
-    cipher = Fernet(SECRET_KEY)
-except Exception as e:
-    print(f"Erreur fatale de chiffrement (Clef invalide) : {e}")
-    sys.exit(1)
-
-def encrypt_val(val):
-    if not val or val == "Non renseigne": return "Non renseigne"
-    return cipher.encrypt(val.encode('utf-8')).decode('utf-8')
-
-def decrypt_val(val):
-    if not val or val == "Non renseigne": return "Non renseigne"
-    try:
-        return cipher.decrypt(val.encode('utf-8')).decode('utf-8')
-    except:
-        return "[Erreur Dechiffrement]"
-
 # *** DESIGN ***
 C_BASE = '\033[96m'
 C_OK = '\033[92m'
@@ -54,7 +60,38 @@ C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
 
-USER_DATA_PATH = os.path.normpath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", "users_docker.json"))
+# *** CHIFFREMENT (FERNET) VIA .ENV ***
+load_dotenv(dotenv_path=env_path)
+env_key = os.getenv("FERNET_SECRET_KEY")
+
+if not env_key:
+    print(f"{C_DANGER}Erreur fatale : Clef FERNET_SECRET_KEY introuvable dans le fichier .env !{C_END}")
+    sys.exit(1)
+
+try:
+    SECRET_KEY = env_key.encode('utf-8')
+    cipher = Fernet(SECRET_KEY)
+except Exception as e:
+    print(f"{C_DANGER}Erreur fatale de chiffrement (Clef invalide) : {e}{C_END}")
+    sys.exit(1)
+
+def encrypt_val(val):
+    if not val or val == "Non renseigne": 
+        return "Non renseigne"
+    return cipher.encrypt(val.encode('utf-8')).decode('utf-8')
+
+def decrypt_val(val):
+    if not val or val == "Non renseigne": 
+        return "Non renseigne"
+    try:
+        return cipher.decrypt(val.encode('utf-8')).decode('utf-8')
+    except:
+        return "[Erreur Dechiffrement]"
+
+# *** CONFIGURATION DES BACKUPS ***
+os.makedirs(BACKUP_PREFS_DIR, exist_ok=True)
+BACKUP_CONFIG_FILE = os.path.join(BACKUP_PREFS_DIR, "backup_config.json")
+os.makedirs(BACKUP_DATA_DIR, exist_ok=True)
 
 # *** DICTIONNAIRE TELEPHONIQUE ***
 COUNTRIES = {
@@ -85,9 +122,11 @@ class DBLock:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            if self.fd: os.close(self.fd)
+            if self.fd: 
+                os.close(self.fd)
             os.remove(self.lockfile)
-        except Exception: pass
+        except Exception: 
+            pass
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -96,7 +135,8 @@ def run(cmd):
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         return result.stdout.strip(), result.returncode
-    except: return "", 1
+    except: 
+        return "", 1
 
 def is_docker_alive():
     _, code = run("docker info")
@@ -127,7 +167,8 @@ def check_password_complexity(pwd):
     return missing
 
 def is_unique(users, field, value):
-    if not value or value == "Non renseigne": return True
+    if not value or value == "Non renseigne": 
+        return True
     for u, data in users.items():
         if field in data and decrypt_val(data[field]) == value:
             return False
@@ -136,9 +177,11 @@ def is_unique(users, field, value):
 # *** PATCH DE LA BASE DE DONNEES ***
 def patch_database():
     try:
-        if not os.path.exists(USER_DATA_PATH): return
+        if not os.path.exists(USER_DATA_PATH): 
+            return
         with DBLock(USER_DATA_PATH):
-            with open(USER_DATA_PATH, 'r') as f: users = json.load(f)
+            with open(USER_DATA_PATH, 'r') as f: 
+                users = json.load(f)
             changed = False
             for u, data in users.items():
                 if "id" not in data:
@@ -155,11 +198,487 @@ def patch_database():
                     changed = True
             
             if changed:
-                with open(USER_DATA_PATH, 'w') as f: json.dump(users, f, indent=4)
-                logging.info("Mise a jour de la base de donnees (Patch UUID, blocked, force_reset, reset_by_admin).")
+                with open(USER_DATA_PATH, 'w') as f: 
+                    json.dump(users, f, indent=4)
+                logging.info("Mise a jour de la base de donnees effectuee.")
     except Exception as e:
         logging.error(f"Erreur lors du patch de la BDD : {e}")
 
+# *** FONCTIONS BACKUP ***
+def load_backup_config():
+    default_config = {
+        "interval_type": "days", 
+        "interval_value": 7,      
+        "retention_count": 5      
+    }
+    if os.path.exists(BACKUP_CONFIG_FILE):
+        with open(BACKUP_CONFIG_FILE, "r") as f:
+            return json.load(f)
+    else:
+        with open(BACKUP_CONFIG_FILE, "w") as f:
+            json.dump(default_config, f, indent=4)
+        return default_config
+
+def save_backup_config(config):
+    with open(BACKUP_CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
+
+def run_full_backup(current_admin, silent=False):
+    config = load_backup_config()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    temp_dir = tempfile.gettempdir()
+    temp_zip_base = os.path.join(temp_dir, f"Backup_Full_{timestamp}")
+    target_dir = ROOT_BACKUP_DIR
+    
+    if not silent:
+        print(f"\n{C_BASE}[*] Lancement de la sauvegarde de l'infrastructure ({target_dir})...{C_END}")
+
+    def zip_task():
+        with zipfile.ZipFile(temp_zip_base + ".zip", 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(target_dir):
+                # On ne sauvegarde SURTOUT PAS le dossier des backups
+                if os.path.abspath(BACKUP_DATA_DIR) in os.path.abspath(root): 
+                    continue
+                for f in files:
+                    try:
+                        zf.write(os.path.join(root, f), os.path.relpath(os.path.join(root, f), target_dir))
+                    except:
+                        pass 
+
+    thread = threading.Thread(target=zip_task)
+    thread.start()
+
+    steps = 50
+    i = 0
+    while thread.is_alive():
+        percent = min((i / steps) * 99, 99)
+        bar_len = int((percent / 100) * 20)
+        bar = '=' * bar_len + ' ' * (20 - bar_len)
+        if not silent:
+            sys.stdout.write(f"\r[{bar}] {percent:.0f}%")
+            sys.stdout.flush()
+        time.sleep(0.2)
+        i += 1
+
+    thread.join()
+    
+    if not silent:
+        sys.stdout.write(f"\r[{'=' * 20}] 100%\n")
+        sys.stdout.flush()
+
+    zip_file = temp_zip_base + ".zip"
+    
+    if not silent:
+        print(f"{C_WARN}[*] Application du chiffrement AES (Fernet) sur l'archive...{C_END}")
+        
+    with open(zip_file, "rb") as f:
+        zip_data = f.read()
+    encrypted_data = cipher.encrypt(zip_data)
+    
+    final_encrypted_file = os.path.join(BACKUP_DATA_DIR, f"Backup_Full_{timestamp}.zip.enc")
+    with open(final_encrypted_file, "wb") as f:
+        f.write(encrypted_data)
+        
+    os.remove(zip_file)
+    
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    all_backups.sort(key=os.path.getctime)
+    
+    while len(all_backups) > config["retention_count"]:
+        oldest = all_backups.pop(0)
+        os.remove(oldest)
+        if not silent:
+            print(f"{C_WARN}[-] Ancienne archive purgee : {os.path.basename(oldest)}{C_END}")
+        logging.info(f"[BACKUP] Systeme a purge automatiquement l'archive {os.path.basename(oldest)}.")
+
+    if not silent:
+        print(f"{C_OK}[+] Sauvegarde finalisee et securisee avec succes !{C_END}")
+        time.sleep(2)
+        
+    logging.info(f"[BACKUP] [{current_admin}] a realise une nouvelle sauvegarde avec succes.")
+
+def check_auto_backup():
+    config = load_backup_config()
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    
+    needs_backup = False
+    if not all_backups:
+        needs_backup = True
+    else:
+        latest_backup = max(all_backups, key=os.path.getctime)
+        last_time = datetime.fromtimestamp(os.path.getctime(latest_backup))
+        
+        if config["interval_type"] == "days":
+            limit = last_time + timedelta(days=config["interval_value"])
+        else:
+            limit = last_time + timedelta(hours=config["interval_value"])
+            
+        if datetime.now() >= limit:
+            needs_backup = True
+
+    if needs_backup:
+        print(f"\n{C_WARN}[!] Declenchement de la sauvegarde automatique requise.{C_END}")
+        run_full_backup("SYSTEM_AUTO", silent=False)
+        print(f"{C_OK}[+] Verification des backups terminee !{C_END}\n")
+        time.sleep(1)
+
+def decrypt_existing_backup(current_admin):
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    if not all_backups:
+        print(f"{C_DANGER}[!] Aucune archive chiffree trouvee dans {BACKUP_DATA_DIR}.{C_END}")
+        time.sleep(2)
+        return
+
+    print(f"\n{C_BASE}=== ARCHIVES DISPONIBLES ==={C_END}")
+    for i, path in enumerate(all_backups):
+        size = os.path.getsize(path) / (1024 * 1024)
+        print(f"{i+1}. {os.path.basename(path)} ({size:.2f} Mo)")
+    
+    print("0. Annuler")
+    
+    try:
+        c = input("\nQuelle archive dechiffrer ? (Numero) : ").strip()
+        if c == '0':
+            return
+            
+        c = int(c)
+        if 1 <= c <= len(all_backups):
+            target_enc = all_backups[c-1]
+            target_zip = target_enc.replace(".enc", "") 
+            
+            if os.path.exists(target_zip):
+                print(f"\n{C_WARN}[!] Ce fichier a deja ete dechiffre et est present dans le dossier : {os.path.basename(target_zip)}{C_END}")
+                input("Appuyez sur Entree pour revenir...")
+                return
+
+            print(f"{C_WARN}[*] Dechiffrement en cours...{C_END}")
+            with open(target_enc, "rb") as f:
+                encrypted_data = f.read()
+            
+            decrypted_data = cipher.decrypt(encrypted_data)
+            
+            with open(target_zip, "wb") as f:
+                f.write(decrypted_data)
+            
+            print(f"{C_OK}[+] Succes ! L'archive est prete et lisible (WinRAR) : {os.path.basename(target_zip)}{C_END}")
+            print(f"{C_WARN}N'oubliez pas de supprimer le .zip clair apres votre intervention via le menu de suppression.{C_END}")
+            logging.warning(f"[BACKUP] [{current_admin}] a extrait la version dechiffree de {os.path.basename(target_enc)}")
+            input("\nAppuyez sur Entree pour continuer...")
+        else:
+            print(f"{C_DANGER}Choix invalide.{C_END}")
+            time.sleep(1)
+    except ValueError:
+        print(f"{C_DANGER}Entree invalide.{C_END}")
+        time.sleep(1)
+    except Exception as e:
+        print(f"{C_DANGER}[!] Erreur lors du dechiffrement : {e}{C_END}")
+        time.sleep(4)
+
+def list_backup_contents(current_admin):
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    if not all_backups:
+        print(f"{C_DANGER}[!] Aucune archive trouvee.{C_END}")
+        time.sleep(2)
+        return
+
+    print(f"\n{C_BASE}=== INSPECTION DES ARCHIVES ==={C_END}")
+    for i, path in enumerate(all_backups):
+        size = os.path.getsize(path) / (1024 * 1024)
+        print(f"{i+1}. {os.path.basename(path)} ({size:.2f} Mo)")
+    
+    print("0. Annuler")
+    
+    try:
+        c = input("\nQuelle archive inspecter ? (Numero) : ").strip()
+        if c == '0':
+            return
+            
+        c = int(c)
+        if 1 <= c <= len(all_backups):
+            target_enc = all_backups[c-1]
+            
+            print(f"{C_WARN}[*] Lecture securisee de l'archive en memoire vive...{C_END}")
+            with open(target_enc, "rb") as f:
+                encrypted_data = f.read()
+            
+            decrypted_data = cipher.decrypt(encrypted_data)
+            
+            with zipfile.ZipFile(io.BytesIO(decrypted_data)) as z:
+                files = z.namelist()
+            
+            clear_screen()
+            print(f"{C_BASE}=== CONTENU DE L'ARCHIVE : {os.path.basename(target_enc)} ==={C_END}\n")
+            
+            for f_name in files[:50]:
+                if f_name.endswith('/'):
+                    print(f"{C_BASE}[DOSSIER]{C_END} {f_name}")
+                else:
+                    print(f"{C_OK}[FICHIER]{C_END} {f_name}")
+            
+            if len(files) > 50:
+                print(f"\n{C_WARN}... et {len(files) - 50} autres fichiers/dossiers masques pour la lisibilite.{C_END}")
+            
+            print(f"\n{C_OK}[+] Total : {len(files)} elements dans la sauvegarde.{C_END}")
+            logging.info(f"[BACKUP] [{current_admin}] a consulte le contenu de {os.path.basename(target_enc)}")
+            input("\nAppuyez sur Entree pour continuer...")
+        else:
+            print(f"{C_DANGER}Choix invalide.{C_END}")
+            time.sleep(1)
+    except ValueError:
+        print(f"{C_DANGER}Entree invalide.{C_END}")
+        time.sleep(1)
+    except Exception as e:
+        print(f"{C_DANGER}[!] Erreur lors de la lecture : {e}{C_END}")
+        time.sleep(4)
+
+def compute_crc32(file_path):
+    hash_crc = 0
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_crc = zlib.crc32(chunk, hash_crc)
+    except Exception:
+        return None
+    return hash_crc & 0xFFFFFFFF
+
+def restore_backup(current_admin):
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    if not all_backups:
+        print(f"{C_DANGER}[!] Aucune archive trouvee.{C_END}")
+        time.sleep(2)
+        return
+
+    print(f"\n{C_DANGER}=== RESTAURATION DU SYSTEME (SMART ROLLBACK) ==={C_END}")
+    print(f"{C_WARN}ATTENTION : Seuls les fichiers modifies ou supprimes seront restaures.{C_END}\n")
+    
+    for i, path in enumerate(all_backups):
+        date_str = datetime.fromtimestamp(os.path.getctime(path)).strftime('%d/%m/%Y %H:%M')
+        print(f"{i+1}. {os.path.basename(path)} (Creee le {date_str})")
+    
+    print("0. Annuler")
+    
+    try:
+        c = input("\nArchive a restaurer ? (Numero) : ").strip()
+        if c == '0':
+            return
+            
+        c = int(c)
+        if 1 <= c <= len(all_backups):
+            target_enc = all_backups[c-1]
+            confirm = input(f"{C_DANGER}Etes-vous ABSOLUMENT SUR de vouloir restaurer {os.path.basename(target_enc)} ? (oui/non) : {C_END}").strip().lower()
+            
+            if confirm != 'oui':
+                print(f"{C_WARN}Restauration annulee.{C_END}")
+                time.sleep(2)
+                return
+            
+            print(f"{C_WARN}[*] Dechiffrement et analyse intelligente des fichiers en cours...{C_END}")
+            target_dir = ROOT_BACKUP_DIR
+            
+            with open(target_enc, "rb") as f:
+                encrypted_data = f.read()
+            
+            decrypted_data = cipher.decrypt(encrypted_data)
+            
+            files_restored = 0
+            files_skipped = 0
+
+            with zipfile.ZipFile(io.BytesIO(decrypted_data)) as z:
+                for zip_info in z.infolist():
+                    target_path = os.path.join(target_dir, zip_info.filename)
+                    
+                    if zip_info.is_dir():
+                        os.makedirs(target_path, exist_ok=True)
+                        continue
+                        
+                    if os.path.exists(target_path):
+                        local_crc = compute_crc32(target_path)
+                        if local_crc == zip_info.CRC:
+                            files_skipped += 1
+                            continue 
+                            
+                        try:
+                            os.chmod(target_path, stat.S_IWRITE)
+                        except:
+                            pass
+                            
+                    try:
+                        z.extract(zip_info, target_dir)
+                        files_restored += 1
+                    except Exception as e:
+                        print(f"{C_DANGER}Erreur sur {zip_info.filename} : {e}{C_END}")
+                
+            print(f"\n{C_OK}[+] SYSTEME RESTAURE AVEC SUCCES.{C_END}")
+            print(f"{C_BASE}[i] Rapport Smart Restore : {files_restored} fichiers restaures, {files_skipped} fichiers ignores (deja a jour).{C_END}")
+            logging.critical(f"[BACKUP] [{current_admin}] a effectue un SMART ROLLBACK depuis l'archive {os.path.basename(target_enc)}")
+            input("\nAppuyez sur Entree pour continuer...")
+        else:
+            print(f"{C_DANGER}Choix invalide.{C_END}")
+            time.sleep(1)
+    except Exception as e:
+        print(f"{C_DANGER}Erreur critique lors de la restauration : {e}{C_END}")
+        time.sleep(4)
+
+def manual_delete_backup(current_admin):
+    enc_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    raw_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip"))
+    all_backups = enc_backups + raw_backups
+    all_backups.sort(key=os.path.getctime)
+
+    if not all_backups:
+        print(f"{C_DANGER}[!] Aucune archive trouvee.{C_END}")
+        time.sleep(2)
+        return
+
+    print(f"\n{C_DANGER}=== SUPPRESSION MANUELLE ==={C_END}")
+    for i, path in enumerate(all_backups):
+        print(f"{i+1}. {os.path.basename(path)}")
+    
+    print("0. Annuler")
+    
+    try:
+        c = input("\nArchive a supprimer ? (Numero) : ").strip()
+        if c == '0':
+            return
+            
+        c = int(c)
+        if 1 <= c <= len(all_backups):
+            target = all_backups[c-1]
+            
+            confirm = input(f"{C_WARN}Etes-vous sur de vouloir supprimer {os.path.basename(target)} ? (oui/non) : {C_END}").strip().lower()
+            
+            if confirm == 'oui':
+                os.remove(target)
+                print(f"{C_OK}[+] L'archive {os.path.basename(target)} a ete supprimee.{C_END}")
+                logging.warning(f"[BACKUP] [{current_admin}] a SUPPRIME l'archive {os.path.basename(target)}")
+                time.sleep(2)
+            else:
+                print(f"{C_WARN}Suppression annulee.{C_END}")
+                time.sleep(2)
+        else:
+            print(f"{C_DANGER}Choix invalide.{C_END}")
+            time.sleep(1)
+    except Exception as e:
+        print(f"{C_DANGER}Erreur : {e}{C_END}")
+        time.sleep(2)
+
+def view_backup_logs(current_admin):
+    clear_screen()
+    print(f"{C_BASE}=== LOGS DU GESTIONNAIRE DE SAUVEGARDE ==={C_END}\n")
+    if os.path.exists(log_file):
+        logs_to_show = []
+        with open(log_file, 'r') as f:
+            for line in f:
+                if "[BACKUP]" in line:
+                    logs_to_show.append(line.strip())
+        
+        if logs_to_show:
+            for line in logs_to_show[-25:]:
+                print(line)
+        else:
+            print(f"{C_WARN}Aucune action de sauvegarde enregistree pour le moment.{C_END}")
+    else:
+        print(f"{C_DANGER}Fichier de log introuvable.{C_END}")
+    
+    logging.info(f"[BACKUP] [{current_admin}] a consulte les logs de sauvegarde.")
+    input("\nAppuyez sur Entree pour revenir.")
+
+def open_backup_menu(current_admin):
+    clear_screen() 
+    print(f"\n{C_DANGER}=== ZONE SECURISEE : GESTION DES SAUVEGARDES ==={C_END}")
+    pwd = getpass.getpass("Veuillez confirmer votre mot de passe : ").strip()
+    
+    try:
+        with DBLock(USER_DATA_PATH):
+            with open(USER_DATA_PATH, 'r') as f:
+                users = json.load(f)
+    except Exception as e:
+        print(f"{C_DANGER}Erreur de lecture du fichier JSON : {e}{C_END}")
+        time.sleep(2)
+        return
+
+    stored_admin_hash = users[current_admin].get("password", "").encode('utf-8')
+    try:
+        admin_match = bcrypt.checkpw(pwd.encode('utf-8'), stored_admin_hash)
+    except ValueError:
+        admin_match = False
+
+    if not admin_match:
+        print(f"{C_DANGER}[!] Echec de l'authentification. Retour au menu principal.{C_END}")
+        logging.warning(f"Tentative ECHOUEE acces menu Backup par: {current_admin}")
+        time.sleep(2)
+        return
+
+    logging.info(f"Acces REUSSI menu Backup par: {current_admin}")
+    
+    while True:
+        clear_screen()
+        print(f"{C_BASE}=== GESTION DES SAUVEGARDES (Admin: {current_admin}) ==={C_END}\n")
+        
+        config = load_backup_config()
+        all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+        if all_backups:
+            latest = max(all_backups, key=os.path.getctime)
+            date_str = datetime.fromtimestamp(os.path.getctime(latest)).strftime('%d/%m/%Y %H:%M')
+            print(f"{C_OK}[ STATUT : Dernier backup le {date_str} ]{C_END}\n")
+        else:
+            print(f"{C_DANGER}[ STATUT : AUCUNE SAUVEGARDE EXISTANTE ]{C_END}\n")
+
+        unite_aff = "jours" if config['interval_type'] == "days" else "heures"
+
+        print(f"{C_BASE}--- MENU ---{C_END}")
+        print(f"1. {C_OK}Lancer un Full Backup manuel{C_END}")
+        print(f"2. {C_DANGER}Restaurer une sauvegarde (Rollback System){C_END}")
+        print(f"3. {C_BASE}Inspecter le contenu d'une archive (RAM){C_END}")
+        print(f"4. {C_WARN}Dechiffrer une archive vers WinRAR (Extraction){C_END}")
+        print(f"5. {C_DANGER}Supprimer une archive manuellement{C_END}")
+        print(f"6. {C_BASE}Consulter les logs de sauvegarde{C_END}")
+        print(f"7. {C_WARN}Configurer la planification{C_END} (Actuel: Tous les {config['interval_value']} {unite_aff})")
+        print(f"8. {C_WARN}Configurer la retention{C_END} (Actuel: Garde {config['retention_count']} fichiers)")
+        print("0. Retour au menu principal")
+        
+        choix = input("\nAction : ").strip()
+        
+        if choix == "1":
+            run_full_backup(current_admin, silent=False)
+        elif choix == "2":
+            restore_backup(current_admin)
+        elif choix == "3":
+            list_backup_contents(current_admin)
+        elif choix == "4":
+            decrypt_existing_backup(current_admin)
+        elif choix == "5":
+            manual_delete_backup(current_admin)
+        elif choix == "6":
+            view_backup_logs(current_admin)
+        elif choix == "7":
+            t = input("Unite de temps (jours/heures) : ").strip().lower()
+            if t in ["jours", "heures"]:
+                v = input(f"Nombre de {t} : ")
+                if v.isdigit():
+                    config["interval_type"] = "days" if t == "jours" else "hours"
+                    config["interval_value"] = int(v)
+                    save_backup_config(config)
+                    print(f"{C_OK}Configuration sauvegardee.{C_END}")
+                    time.sleep(1)
+            else:
+                print(f"{C_DANGER}Unite invalide.{C_END}")
+                time.sleep(1)
+        elif choix == "8":
+            v = input("Nombre maximum de backups a conserver (min 1) : ")
+            if v.isdigit() and int(v) >= 1:
+                config["retention_count"] = int(v)
+                save_backup_config(config)
+                print(f"{C_OK}Retention mise a jour.{C_END}")
+                time.sleep(1)
+            else:
+                print(f"{C_DANGER}Valeur invalide (doit etre superieure ou egale a 1).{C_END}")
+                time.sleep(2)
+        elif choix == "0":
+            break
+
+# *** GESTION AUTHENTIFICATION & UTILISATEURS ***
 def authenticate():
     for attempt in range(3, 0, -1):
         clear_screen()
@@ -176,7 +695,9 @@ def authenticate():
                 with open(USER_DATA_PATH, 'r') as f:
                     valid_users = json.load(f)
         except Exception as e:
-            print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base. Details: {e}{C_END}"); time.sleep(4); return None, None
+            print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base. Details: {e}{C_END}")
+            time.sleep(4)
+            return None, None
         
         stored_hash_str = valid_users.get(user, {}).get("password", "")
         stored_hash = stored_hash_str.encode('utf-8')
@@ -189,16 +710,20 @@ def authenticate():
         if user not in valid_users or not password_match:
             if user in valid_users and valid_users[user].get("reset_by_admin"):
                 print(f"{C_DANGER}[!] ACCES REFUSE : Votre mot de passe a ete reinitialise.{C_END}")
-                print(f"{C_WARN}Veuillez contacter l'administrateur ou le support IT pour obtenir votre mot de passe temporaire.{C_END}")
+                print(f"{C_WARN}Veuillez contacter l'administrateur pour obtenir votre mot de passe temporaire.{C_END}")
                 time.sleep(4)
             else:
                 print(f"{C_DANGER}[!] ERREUR 200 : Identifiants incorrects.{C_END}")
             
             logging.warning(f"Tentative ECHOUEE (200) Identifiants incorrects pour: {user}")
             if attempt > 1:
-                print(f"{C_WARN}Il vous reste {attempt - 1} essai(s).{C_END}"); time.sleep(2); continue
+                print(f"{C_WARN}Il vous reste {attempt - 1} essai(s).{C_END}")
+                time.sleep(2)
+                continue
             else:
-                print(f"{C_DANGER}[!] ACCES REFUSE. Incident enregistre.{C_END}"); time.sleep(3); return None, None
+                print(f"{C_DANGER}[!] ACCES REFUSE. Incident enregistre.{C_END}")
+                time.sleep(3)
+                return None, None
 
         if valid_users[user].get("blocked", False):
             print(f"{C_DANGER}[!] ERREUR 403 : Ce compte a ete suspendu par un administrateur.{C_END}")
@@ -212,30 +737,39 @@ def authenticate():
                 new_pwd = getpass.getpass("\nNouveau mot de passe : ").strip()
                 missing = check_password_complexity(new_pwd)
                 if missing:
-                    print(f"{C_DANGER}Mot de passe invalide. Il manque : {', '.join(missing)}{C_END}"); continue
+                    print(f"{C_DANGER}Mot de passe invalide. Il manque : {', '.join(missing)}{C_END}")
+                    continue
                 
                 confirm = getpass.getpass("Confirmez le mot de passe : ").strip()
                 if new_pwd != confirm:
-                    print(f"{C_DANGER}Les mots de passe ne correspondent pas. Reessayez.{C_END}"); continue
+                    print(f"{C_DANGER}Les mots de passe ne correspondent pas. Reessayez.{C_END}")
+                    continue
                 
                 try:
                     if bcrypt.checkpw(new_pwd.encode('utf-8'), stored_hash):
-                        print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}"); continue
-                except ValueError: pass
+                        print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}")
+                        continue
+                except ValueError: 
+                    pass
                 
                 new_hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 break
 
             try:
                 with DBLock(USER_DATA_PATH):
-                    with open(USER_DATA_PATH, 'r') as f: fresh_users = json.load(f)
+                    with open(USER_DATA_PATH, 'r') as f: 
+                        fresh_users = json.load(f)
                     fresh_users[user]["password"] = new_hashed
                     fresh_users[user]["force_reset"] = False
                     fresh_users[user]["reset_by_admin"] = False
-                    with open(USER_DATA_PATH, 'w') as f: json.dump(fresh_users, f, indent=4)
-                print(f"{C_OK}[+] Mot de passe mis a jour avec succes.{C_END}"); time.sleep(2)
+                    with open(USER_DATA_PATH, 'w') as f: 
+                        json.dump(fresh_users, f, indent=4)
+                print(f"{C_OK}[+] Mot de passe mis a jour avec succes.{C_END}")
+                time.sleep(2)
             except Exception as e:
-                print(f"{C_DANGER}Erreur lors de la sauvegarde : {e}{C_END}"); time.sleep(3); return None, None
+                print(f"{C_DANGER}Erreur lors de la sauvegarde : {e}{C_END}")
+                time.sleep(3)
+                return None, None
 
         role = valid_users[user].get("role", "user")
         logging.info(f"Connexion REUSSIE Utilisateur: {user} | Role: {role}")
@@ -248,9 +782,12 @@ def manage_users(current_admin):
         
         try:
             with DBLock(USER_DATA_PATH):
-                with open(USER_DATA_PATH, 'r') as f: users = json.load(f)
+                with open(USER_DATA_PATH, 'r') as f: 
+                    users = json.load(f)
         except Exception as e:
-            print(f"{C_DANGER}Erreur de lecture du fichier JSON : {e}{C_END}"); time.sleep(3); break
+            print(f"{C_DANGER}Erreur de lecture du fichier JSON : {e}{C_END}")
+            time.sleep(3)
+            break
 
         print(f"{'Utilisateur':<15} | {'Role':<10} | {'Reset':<5} | {'Bloque':<6}")
         print("*" * 50)
@@ -266,18 +803,25 @@ def manage_users(current_admin):
         print("0. Retour")
         
         choice = input("\nAction : ").strip()
-        if choice == '0': break
+        if choice == '0': 
+            break
 
         if choice in ['1', '2', '3']:
             clear_screen()
-            if choice == '1': print(f"{C_OK}*** AJOUTER UN NOUVEL UTILISATEUR ***{C_END}\n")
-            elif choice == '2': print(f"{C_DANGER}*** SUPPRIMER UN UTILISATEUR ***{C_END}\n")
-            elif choice == '3': print(f"{C_WARN}*** INSPECTER / MODIFIER UN UTILISATEUR ***{C_END}\n")
+            if choice == '1': 
+                print(f"{C_OK}*** AJOUTER UN NOUVEL UTILISATEUR ***{C_END}\n")
+            elif choice == '2': 
+                print(f"{C_DANGER}*** SUPPRIMER UN UTILISATEUR ***{C_END}\n")
+            elif choice == '3': 
+                print(f"{C_WARN}*** INSPECTER / MODIFIER UN UTILISATEUR ***{C_END}\n")
 
             print(f"{C_WARN}Pour des raisons de securite liees aux donnees personnelles, veuillez vous authentifier.{C_END}")
             admin_pwd = getpass.getpass(f"Mot de passe de {current_admin} (ou '0' pour annuler) : ").strip()
             
-            if admin_pwd == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+            if admin_pwd == '0': 
+                print(f"\n{C_WARN}Action annulee.{C_END}")
+                time.sleep(2)
+                continue
             
             stored_admin_hash = users[current_admin].get("password", "").encode('utf-8')
             try:
@@ -286,73 +830,104 @@ def manage_users(current_admin):
                 admin_match = False
                 
             if not admin_match:
-                print(f"{C_DANGER}[!] Mot de passe incorrect.{C_END}"); time.sleep(2); continue
+                print(f"{C_DANGER}[!] Mot de passe incorrect.{C_END}")
+                time.sleep(2)
+                continue
 
-            # === AJOUT ===
             if choice == '1':
                 nom = ""
                 while not nom:
                     nom = input("\n1. Nom de famille ['0' annuler] : ").strip().upper()
-                if nom == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if nom == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
                 
                 prenom = ""
                 while not prenom:
                     prenom = input("2. Prenom ['0' annuler] : ").strip().capitalize()
-                if prenom == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if prenom == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 new_user = ""
                 while True:
                     new_user = input("3. Nom d'utilisateur (login) ['0' annuler] : ").strip().lower()
-                    if new_user == '0': break
+                    if new_user == '0': 
+                        break
                     if not new_user or new_user in users:
-                        print(f"{C_DANGER}Identifiant invalide ou deja existant.{C_END}"); continue
+                        print(f"{C_DANGER}Identifiant invalide ou deja existant.{C_END}")
+                        continue
                     break
-                if new_user == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if new_user == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 email_in = ""
                 while True:
                     email_in = input("4. Email (vide pour ignorer) ['0' annuler] : ").strip()
-                    if email_in in ['0', '']: break
+                    if email_in in ['0', '']: 
+                        break
                     if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email_in):
-                        print(f"{C_DANGER}Format d'email invalide.{C_END}"); continue
+                        print(f"{C_DANGER}Format d'email invalide.{C_END}")
+                        continue
                     if not is_unique(users, "email", email_in):
-                        print(f"{C_DANGER}Cet email est deja utilise par un autre compte.{C_END}"); continue
+                        print(f"{C_DANGER}Cet email est deja utilise par un autre compte.{C_END}")
+                        continue
                     break
-                if email_in == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if email_in == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 phone_in = ""
                 while True:
                     print("5. Telephone (vide pour ignorer) ['0' annuler]")
                     c_code = input("   Pays (ex: FR, 'liste' pour voir, vide pour ignorer) : ").strip().lower()
-                    if c_code == '0': phone_in = '0'; break
-                    if c_code == '': break
+                    if c_code == '0': 
+                        phone_in = '0'
+                        break
+                    if c_code == '': 
+                        break
                     
                     if c_code == 'liste':
-                        for k, v in COUNTRIES.items(): print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                        for k, v in COUNTRIES.items(): 
+                            print(f"   - {k.upper()} : {v['name']} ({v['code']})")
                         continue
                         
                     if c_code not in COUNTRIES:
-                        print(f"{C_DANGER}Pays inconnu. Tapez 'liste' pour voir les choix.{C_END}"); continue
+                        print(f"{C_DANGER}Pays inconnu. Tapez 'liste' pour voir les choix.{C_END}")
+                        continue
                         
                     country = COUNTRIES[c_code]
                     num = input(f"   Numero {country['code']} : ").strip()
-                    if num == '0': phone_in = '0'; break
+                    if num == '0': 
+                        phone_in = '0'
+                        break
                     
                     num = num.replace(" ", "").replace(".", "").replace("-", "")
-                    if num.startswith(country['code']): num = num[len(country['code']):]
-                    if num.startswith('0'): num = num[1:] 
+                    if num.startswith(country['code']): 
+                        num = num[len(country['code']):]
+                    if num.startswith('0'): 
+                        num = num[1:] 
                     
                     if len(num) != country['len']:
-                        print(f"{C_DANGER}Longueur invalide. Attente de {country['len']} chiffres apres le {country['code']} (sans zero).{C_END}")
+                        print(f"{C_DANGER}Longueur invalide. Attente de {country['len']} chiffres apres le {country['code']}.{C_END}")
                         continue
                         
                     full_phone = country['code'] + num
                     if not is_unique(users, "phone", full_phone):
-                        print(f"{C_DANGER}Ce numero est deja utilise.{C_END}"); continue
+                        print(f"{C_DANGER}Ce numero est deja utilise.{C_END}")
+                        continue
                         
                     phone_in = full_phone
                     break
-                if phone_in == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if phone_in == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 print("\n*** Informations Professionnelles ***")
                 entreprise = input("6. Entreprise (vide pour ignorer) : ").strip()
@@ -366,16 +941,21 @@ def manage_users(current_admin):
                     print("   2. Generer automatiquement")
                     print("   0. Annuler")
                     pwd_choice = input("   Choix : ").strip()
-                    if pwd_choice in ['0', '1', '2']: break
+                    if pwd_choice in ['0', '1', '2']: 
+                        break
                     print(f"{C_DANGER}Choix invalide.{C_END}")
-                if pwd_choice == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if pwd_choice == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 new_pwd = ""
                 if pwd_choice == '2':
                     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
                     while True:
                         new_pwd = ''.join(secrets.choice(alphabet) for i in range(12))
-                        if not check_password_complexity(new_pwd): break
+                        if not check_password_complexity(new_pwd): 
+                            break
                     print(f"\n{C_OK}Mot de passe genere : {new_pwd}{C_END}")
                     print(f"{C_WARN}ATTENTION : Notez-le, il ne s'affichera plus !{C_END}")
                     input("Appuyez sur Entree quand vous l'avez note...")
@@ -386,31 +966,45 @@ def manage_users(current_admin):
                     cancel_pwd = False
                     while True:
                         new_pwd = getpass.getpass("\nMot de passe temporaire ('0' pour annuler) : ").strip()
-                        if new_pwd == '0': cancel_pwd = True; break
+                        if new_pwd == '0': 
+                            cancel_pwd = True
+                            break
                         missing = check_password_complexity(new_pwd)
                         if missing:
-                            print(f"{C_DANGER}Mot de passe invalide. Manque : {', '.join(missing)}{C_END}"); continue
+                            print(f"{C_DANGER}Mot de passe invalide. Manque : {', '.join(missing)}{C_END}")
+                            continue
                         confirm = getpass.getpass("Confirmez : ").strip()
                         if new_pwd != confirm:
-                            print(f"{C_DANGER}Correspondance echouee.{C_END}"); continue
+                            print(f"{C_DANGER}Correspondance echouee.{C_END}")
+                            continue
                         break
-                    if cancel_pwd: print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                    if cancel_pwd: 
+                        print(f"\n{C_WARN}Action annulee.{C_END}")
+                        time.sleep(2)
+                        continue
 
                 new_role = ""
                 while True:
                     new_role = input("10. Role (admin/moniteur/user) ['0' annuler] : ").strip().lower()
-                    if new_role == '0': break
+                    if new_role == '0': 
+                        break
                     if new_role not in ['admin', 'user', 'moniteur', '']:
-                        print(f"{C_WARN}Role non reconnu.{C_END}"); continue
-                    if new_role == '': new_role = 'user'
+                        print(f"{C_WARN}Role non reconnu.{C_END}")
+                        continue
+                    if new_role == '': 
+                        new_role = 'user'
                     break
-                if new_role == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
+                if new_role == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
                 try:
                     with DBLock(USER_DATA_PATH):
-                        with open(USER_DATA_PATH, 'r') as f: fresh_users = json.load(f)
+                        with open(USER_DATA_PATH, 'r') as f: 
+                            fresh_users = json.load(f)
                         fresh_users[new_user] = {
                             "id": str(uuid.uuid4()),
                             "blocked": False,
@@ -426,51 +1020,76 @@ def manage_users(current_admin):
                             "secteur": encrypt_val(secteur if secteur else "Non renseigne"),
                             "poste": encrypt_val(poste if poste else "Non renseigne")
                         }
-                        with open(USER_DATA_PATH, 'w') as f: json.dump(fresh_users, f, indent=4)
+                        with open(USER_DATA_PATH, 'w') as f: 
+                            json.dump(fresh_users, f, indent=4)
                     print(f"\n{C_OK}[+] Utilisateur '{new_user}' cree avec succes.{C_END}")
                     logging.info(f"Creation compte: {new_user} par {current_admin}")
                 except Exception as e:
                     print(f"\n{C_DANGER}Erreur BDD : {e}{C_END}")
                 time.sleep(2)
 
-            # === SUPPRESSION ===
             elif choice == '2':
                 del_user = input("Identifiant de l'utilisateur a supprimer (ou '0' pour annuler) : ").strip().lower()
-                if del_user == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
-                if del_user == current_admin: print(f"{C_DANGER}Impossible de supprimer votre propre compte !{C_END}"); time.sleep(3); continue
-                if del_user not in users: print(f"{C_WARN}Utilisateur introuvable.{C_END}"); time.sleep(2); continue
+                if del_user == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
+                if del_user == current_admin: 
+                    print(f"{C_DANGER}Impossible de supprimer votre propre compte !{C_END}")
+                    time.sleep(3)
+                    continue
+                if del_user not in users: 
+                    print(f"{C_WARN}Utilisateur introuvable.{C_END}")
+                    time.sleep(2)
+                    continue
                 
                 confirm = input(f"\n{C_DANGER}ATTENTION : Etes-vous sur de vouloir supprimer definitivement '{del_user}' ? (o/n) : {C_END}").strip().lower()
                 if confirm != 'o':
-                    print(f"\n{C_WARN}Suppression annulee.{C_END}"); time.sleep(2); continue
+                    print(f"\n{C_WARN}Suppression annulee.{C_END}")
+                    time.sleep(2)
+                    continue
 
                 try:
                     with DBLock(USER_DATA_PATH):
-                        with open(USER_DATA_PATH, 'r') as f: fresh_users = json.load(f)
+                        with open(USER_DATA_PATH, 'r') as f: 
+                            fresh_users = json.load(f)
                         if del_user in fresh_users:
                             del fresh_users[del_user]
-                            with open(USER_DATA_PATH, 'w') as f: json.dump(fresh_users, f, indent=4)
+                            with open(USER_DATA_PATH, 'w') as f: 
+                                json.dump(fresh_users, f, indent=4)
                             print(f"{C_OK}[-] Utilisateur '{del_user}' supprime.{C_END}")
                             logging.warning(f"Suppression du compte {del_user} par {current_admin}")
                         else:
                             print(f"{C_WARN}Deja supprime par un autre processus.{C_END}")
-                except Exception as e: print(f"{C_DANGER}Erreur BDD : {e}{C_END}")
+                except Exception as e: 
+                    print(f"{C_DANGER}Erreur BDD : {e}{C_END}")
                 time.sleep(2)
 
-            # === INSPECTION / MODIFICATION ===
             elif choice == '3':
                 target = input("Identifiant a inspecter (ou '0' pour annuler) : ").strip().lower()
-                if target == '0': print(f"\n{C_WARN}Action annulee.{C_END}"); time.sleep(2); continue
-                if target not in users: print(f"{C_WARN}Utilisateur introuvable.{C_END}"); time.sleep(2); continue
+                if target == '0': 
+                    print(f"\n{C_WARN}Action annulee.{C_END}")
+                    time.sleep(2)
+                    continue
+                if target not in users: 
+                    print(f"{C_WARN}Utilisateur introuvable.{C_END}")
+                    time.sleep(2)
+                    continue
                 
                 while True:
                     try:
                         with DBLock(USER_DATA_PATH):
-                            with open(USER_DATA_PATH, 'r') as f: fresh_users = json.load(f)
-                    except Exception as e: print(f"{C_DANGER}Erreur de lecture : {e}{C_END}"); time.sleep(3); break
+                            with open(USER_DATA_PATH, 'r') as f: 
+                                fresh_users = json.load(f)
+                    except Exception as e: 
+                        print(f"{C_DANGER}Erreur de lecture : {e}{C_END}")
+                        time.sleep(3)
+                        break
 
                     if target not in fresh_users:
-                        print(f"{C_DANGER}L'utilisateur a ete supprime entre temps.{C_END}"); time.sleep(3); break
+                        print(f"{C_DANGER}L'utilisateur a ete supprime entre temps.{C_END}")
+                        time.sleep(3)
+                        break
 
                     u_data = fresh_users[target]
                     clear_screen()
@@ -497,38 +1116,54 @@ def manage_users(current_admin):
                     print("0. Retour au menu gestion")
                     
                     mod_choice = input("\nChoix : ").strip()
-                    if mod_choice == '0': break
+                    if mod_choice == '0': 
+                        break
                     
                     field_updates = {}
                     
                     if mod_choice == '1':
                         em = input("Nouvel Email (vide pour vider) : ").strip()
                         if em and not re.match(r"^[^@]+@[^@]+\.[^@]+$", em):
-                            print(f"{C_DANGER}Format invalide.{C_END}"); time.sleep(2); continue
+                            print(f"{C_DANGER}Format invalide.{C_END}")
+                            time.sleep(2)
+                            continue
                         if em and not is_unique(fresh_users, "email", em):
-                            print(f"{C_DANGER}Email deja utilise.{C_END}"); time.sleep(2); continue
+                            print(f"{C_DANGER}Email deja utilise.{C_END}")
+                            time.sleep(2)
+                            continue
                         field_updates["email"] = encrypt_val(em if em else "Non renseigne")
                         logging.info(f"[{current_admin}] a modifie l'email de {target}")
                         
                     elif mod_choice == '2':
                         c_code = input("Code pays (ex: FR, 'liste' pour voir, vide pour vider) : ").strip().lower()
-                        if not c_code: field_updates["phone"] = encrypt_val("Non renseigne")
+                        if not c_code: 
+                            field_updates["phone"] = encrypt_val("Non renseigne")
                         else:
                             if c_code == 'liste':
-                                for k, v in COUNTRIES.items(): print(f"   - {k.upper()} : {v['name']} ({v['code']})")
-                                input("Appuyez sur Entree..."); continue
+                                for k, v in COUNTRIES.items(): 
+                                    print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                                input("Appuyez sur Entree...")
+                                continue
                             if c_code not in COUNTRIES:
-                                print(f"{C_DANGER}Pays inconnu.{C_END}"); time.sleep(2); continue
+                                print(f"{C_DANGER}Pays inconnu.{C_END}")
+                                time.sleep(2)
+                                continue
                             country = COUNTRIES[c_code]
                             num = input(f"Numero {country['code']} : ").strip()
                             num = num.replace(" ", "").replace(".", "").replace("-", "")
-                            if num.startswith(country['code']): num = num[len(country['code']):]
-                            if num.startswith('0'): num = num[1:]
+                            if num.startswith(country['code']): 
+                                num = num[len(country['code']):]
+                            if num.startswith('0'): 
+                                num = num[1:]
                             if len(num) != country['len']:
-                                print(f"{C_DANGER}Taille invalide pour {c_code.upper()}.{C_END}"); time.sleep(2); continue
+                                print(f"{C_DANGER}Taille invalide pour {c_code.upper()}.{C_END}")
+                                time.sleep(2)
+                                continue
                             full = country['code'] + num
                             if not is_unique(fresh_users, "phone", full):
-                                print(f"{C_DANGER}Numero deja utilise.{C_END}"); time.sleep(2); continue
+                                print(f"{C_DANGER}Numero deja utilise.{C_END}")
+                                time.sleep(2)
+                                continue
                             field_updates["phone"] = encrypt_val(full)
                             logging.info(f"[{current_admin}] a modifie le telephone de {target}")
                             
@@ -536,9 +1171,12 @@ def manage_users(current_admin):
                         ent = input("Entreprise (vide=conserver, 'vider'=effacer) : ").strip()
                         sec = input("Secteur (vide=conserver, 'vider'=effacer) : ").strip()
                         pos = input("Poste (vide=conserver, 'vider'=effacer) : ").strip()
-                        if ent: field_updates["entreprise"] = encrypt_val("Non renseigne" if ent.lower() == 'vider' else ent)
-                        if sec: field_updates["secteur"] = encrypt_val("Non renseigne" if sec.lower() == 'vider' else sec)
-                        if pos: field_updates["poste"] = encrypt_val("Non renseigne" if pos.lower() == 'vider' else pos)
+                        if ent: 
+                            field_updates["entreprise"] = encrypt_val("Non renseigne" if ent.lower() == 'vider' else ent)
+                        if sec: 
+                            field_updates["secteur"] = encrypt_val("Non renseigne" if sec.lower() == 'vider' else sec)
+                        if pos: 
+                            field_updates["poste"] = encrypt_val("Non renseigne" if pos.lower() == 'vider' else pos)
                         logging.info(f"[{current_admin}] a modifie les infos pro de {target}")
 
                     elif mod_choice == '4':
@@ -547,14 +1185,16 @@ def manage_users(current_admin):
                         print("   2. Generer automatiquement")
                         print("   0. Annuler")
                         pwd_c = input("   Choix : ").strip()
-                        if pwd_c not in ['1', '2']: continue
+                        if pwd_c not in ['1', '2']: 
+                            continue
                         
                         new_pwd = ""
                         if pwd_c == '2':
                             alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
                             while True:
                                 new_pwd = ''.join(secrets.choice(alphabet) for i in range(12))
-                                if not check_password_complexity(new_pwd): break
+                                if not check_password_complexity(new_pwd): 
+                                    break
                             print(f"\n{C_OK}Nouveau mot de passe de {target} : {new_pwd}{C_END}")
                             input("Notez-le et donnez-le a l'utilisateur. Appuyez sur Entree...")
                             sys.stdout.write("\033[3A\033[J")
@@ -564,13 +1204,20 @@ def manage_users(current_admin):
                             cancel_pwd = False
                             while True:
                                 new_pwd = getpass.getpass("\nNouveau MDP temporaire ('0' pour annuler) : ").strip()
-                                if new_pwd == '0': cancel_pwd = True; break
+                                if new_pwd == '0': 
+                                    cancel_pwd = True
+                                    break
                                 missing = check_password_complexity(new_pwd)
-                                if missing: print(f"{C_DANGER}Mot de passe invalide. Manque : {', '.join(missing)}{C_END}"); continue
+                                if missing: 
+                                    print(f"{C_DANGER}Mot de passe invalide. Manque : {', '.join(missing)}{C_END}")
+                                    continue
                                 confirm = getpass.getpass("Confirmez : ").strip()
-                                if new_pwd != confirm: print(f"{C_DANGER}Correspondance echouee.{C_END}"); continue
+                                if new_pwd != confirm: 
+                                    print(f"{C_DANGER}Correspondance echouee.{C_END}")
+                                    continue
                                 break
-                            if cancel_pwd: continue
+                            if cancel_pwd: 
+                                continue
                             
                         field_updates["password"] = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                         field_updates["force_reset"] = True
@@ -583,7 +1230,9 @@ def manage_users(current_admin):
 
                     elif mod_choice == '6':
                         if target == current_admin:
-                            print(f"{C_DANGER}Impossible de bloquer votre propre compte.{C_END}"); time.sleep(2); continue
+                            print(f"{C_DANGER}Impossible de bloquer votre propre compte.{C_END}")
+                            time.sleep(2)
+                            continue
                         
                         current_status = u_data.get("blocked", False)
                         field_updates["blocked"] = not current_status
@@ -593,11 +1242,17 @@ def manage_users(current_admin):
                     if field_updates:
                         try:
                             with DBLock(USER_DATA_PATH):
-                                with open(USER_DATA_PATH, 'r') as f: sync_users = json.load(f)
-                                for k, v in field_updates.items(): sync_users[target][k] = v
-                                with open(USER_DATA_PATH, 'w') as f: json.dump(sync_users, f, indent=4)
-                            print(f"{C_OK}[+] Action appliquee avec succes sur {target}.{C_END}"); time.sleep(2)
-                        except Exception as e: print(f"{C_DANGER}Erreur de sauvegarde : {e}{C_END}"); time.sleep(3)
+                                with open(USER_DATA_PATH, 'r') as f: 
+                                    sync_users = json.load(f)
+                                for k, v in field_updates.items(): 
+                                    sync_users[target][k] = v
+                                with open(USER_DATA_PATH, 'w') as f: 
+                                    json.dump(sync_users, f, indent=4)
+                            print(f"{C_OK}[+] Action appliquee avec succes sur {target}.{C_END}")
+                            time.sleep(2)
+                        except Exception as e: 
+                            print(f"{C_DANGER}Erreur de sauvegarde : {e}{C_END}")
+                            time.sleep(3)
 
         elif choice == '0':
             break
@@ -608,12 +1263,15 @@ def capture_container_logs(container, q_out, proc_list):
     proc_list.append(proc)
     try:
         for line in iter(proc.stdout.readline, ''):
-            if line: q_out.put(f"{C_BASE}[{container}]{C_END} {line.strip()}")
-    except: pass
+            if line: 
+                q_out.put(f"{C_BASE}[{container}]{C_END} {line.strip()}")
+    except: 
+        pass
 
 def menu_actions(targets, current_user, current_role):
     while True:
-        if not is_docker_alive(): return
+        if not is_docker_alive(): 
+            return
         clear_screen()
         print(f"{C_BASE}=== CIBLES : {', '.join(targets)} | Operateur : {current_user} ({current_role.upper()}) ==={C_END}\n")
         
@@ -640,14 +1298,17 @@ def menu_actions(targets, current_user, current_role):
                 time.sleep(2)
                 
         elif c == '2':
-            if current_role != "admin": continue
+            if current_role != "admin": 
+                continue
             clear_screen()
             print(f"{C_DANGER}=== DESACTIVATION EN COURS ==={C_END}\n")
             states = {m: f"{C_BASE}En attente...{C_END}" for m in targets}
-            for _ in targets: print()
+            for _ in targets: 
+                print()
             def render_states_stop():
                 sys.stdout.write(f"\033[{len(targets)}A")
-                for m in targets: sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
+                for m in targets: 
+                    sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
                 sys.stdout.flush()
             render_states_stop()
             for m in targets:
@@ -657,17 +1318,21 @@ def menu_actions(targets, current_user, current_role):
                 states[m] = f"{C_DANGER}Desactivee.{C_END}"
                 render_states_stop()
             print(f"\n{C_OK}[OK] Toutes les cibles selectionnees sont stoppees.{C_END}")
-            time.sleep(2); break
+            time.sleep(2)
+            break
             
         elif c == '3':
-            if current_role != "admin": continue
+            if current_role != "admin": 
+                continue
             clear_screen()
             print(f"{C_OK}=== DEMARRAGE EN COURS ==={C_END}\n")
             states = {m: f"{C_BASE}En attente...{C_END}" for m in targets}
-            for _ in targets: print()
+            for _ in targets: 
+                print()
             def render_states_start():
                 sys.stdout.write(f"\033[{len(targets)}A")
-                for m in targets: sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
+                for m in targets: 
+                    sys.stdout.write(f"[*] {m} : {states[m]}\033[K\n")
                 sys.stdout.flush()
             render_states_start()
             for m in targets:
@@ -677,10 +1342,12 @@ def menu_actions(targets, current_user, current_role):
                 states[m] = f"{C_OK}En ligne.{C_END}"
                 render_states_start()
             print(f"\n{C_OK}[OK] Toutes les cibles selectionnees sont demarrees.{C_END}")
-            time.sleep(2); break
+            time.sleep(2)
+            break
             
         elif c == '4':
-            if current_role != "admin": continue
+            if current_role != "admin": 
+                continue
             clear_screen()
             print(f"{C_BASE}=== PREPARATION DES ATTAQUES ==={C_END}\n")
             online_machines = [m for m in targets if is_container_running(m)]
@@ -689,7 +1356,8 @@ def menu_actions(targets, current_user, current_role):
                 print(f"{C_WARN}[!] Info : Eteintes (ignorees) : {', '.join(offline_machines)}{C_END}")
             if not online_machines:
                 print(f"\n{C_DANGER}[!] Erreur : Aucune machine allumee.{C_END}")
-                time.sleep(3); break
+                time.sleep(3)
+                break
             print(f"\n{C_BASE}*** LOGICIELS ***{C_END}")
             print("1. Ouvrir Chrome  2. Fermer Chrome")
             print(f"\n{C_DANGER}*** MALWARES ET ATTAQUES ***{C_END}")
@@ -707,21 +1375,28 @@ def menu_actions(targets, current_user, current_role):
                 time.sleep(2)
             break
             
-        elif c == '0': break
+        elif c == '0': 
+            break
 
 def main():
     patch_database()
 
     while True:
         current_user, current_role = authenticate()
-        if not current_user: sys.exit(1)
+        if not current_user: 
+            sys.exit(1)
         print(f"{C_OK}[*] Authentification validee. Bienvenue {current_user} ! (Role: {current_role}){C_END}")
-        time.sleep(2)
+        time.sleep(1)
+        
+        if current_role == "admin":
+            check_auto_backup()
             
         while True:
             clear_screen()
             if not is_docker_alive():
-                print(f"{C_DANGER}ERREUR : DOCKER OFFLINE{C_END}"); time.sleep(3); continue
+                print(f"{C_DANGER}ERREUR : DOCKER OFFLINE{C_END}")
+                time.sleep(3)
+                continue
 
             m_list = get_machines()
             print(f"{C_BASE}=========================================={C_END}")
@@ -734,7 +1409,7 @@ def main():
                 print(f"{i+1}. {m['name']} {col}[{m['status']}]{C_END}")
             
             if current_role == "admin":
-                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'B' (Backups), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
             elif current_role in ["moniteur", "monitoring"]:
                 print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
             else:
@@ -743,32 +1418,46 @@ def main():
             choice = input(f"\n{C_WARN}Selection : {C_END}").lower().strip()
             
             if choice == 'q':
-                print(f"\n{C_OK}Fermeture de la Master Console. Au revoir {current_user} !{C_END}"); sys.exit(0)
+                print(f"\n{C_OK}Fermeture de la Master Console. Au revoir {current_user} !{C_END}")
+                sys.exit(0)
             if choice == 'd':
-                print(f"\n{C_WARN}Deconnexion...{C_END}"); time.sleep(2); break 
+                print(f"\n{C_WARN}Deconnexion...{C_END}")
+                time.sleep(2)
+                break 
             if choice == 'u' and current_role == 'admin':
-                manage_users(current_user); continue
+                manage_users(current_user)
+                continue
+            if choice == 'b' and current_role == 'admin':
+                open_backup_menu(current_user)
+                continue
 
             if choice == 'l':
                 if current_role == "user":
-                    print(f"\n{C_DANGER}[!] Acces refuse.{C_END}"); time.sleep(2); continue
+                    print(f"\n{C_DANGER}[!] Acces refuse.{C_END}")
+                    time.sleep(2)
+                    continue
                 print(f"\n{C_BASE}Quelles machines monitorer ? (ex: 1,2 ou toutes){C_END}")
                 log_choice = input(f"{C_WARN}Cibles : {C_END}").lower().strip()
                 selected_logs = []
-                if log_choice in ['toutes', 'all', '*']: selected_logs = [m['name'] for m in m_list]
+                if log_choice in ['toutes', 'all', '*']: 
+                    selected_logs = [m['name'] for m in m_list]
                 else:
                     try:
                         raw = log_choice.replace(' ', ',')
                         indexes = [int(x) - 1 for x in raw.split(',') if x.isdigit()]
                         selected_logs = [m_list[i]['name'] for i in indexes if 0 <= i < len(m_list)]
-                    except: continue
+                    except: 
+                        continue
                 
-                if not selected_logs: continue
+                if not selected_logs: 
+                    continue
                 online_logs = [m for m in selected_logs if is_container_running(m)]
                 offline_logs = [m for m in selected_logs if not is_container_running(m)]
 
                 if not online_logs:
-                    print(f"{C_DANGER}[!] Erreur : Aucune machine allumee.{C_END}"); time.sleep(3); continue
+                    print(f"{C_DANGER}[!] Erreur : Aucune machine allumee.{C_END}")
+                    time.sleep(3)
+                    continue
 
                 clear_screen()
                 print(f"{C_BASE}=== LOGS EN DIRECT : {', '.join(online_logs)} ==={C_END}\n")
@@ -779,18 +1468,22 @@ def main():
                     threading.Thread(target=capture_container_logs, args=(m_name, q, procs), daemon=True).start()
 
                 msg = f"{C_WARN}>>> [Q] RETOUR MENU <<<{C_END}"
-                if offline_logs: msg += f"  {C_DANGER}[Masquees car Eteintes : {', '.join(offline_logs)}]{C_END}"
-                sys.stdout.write(msg); sys.stdout.flush()
+                if offline_logs: 
+                    msg += f"  {C_DANGER}[Masquees car Eteintes : {', '.join(offline_logs)}]{C_END}"
+                sys.stdout.write(msg)
+                sys.stdout.flush()
 
                 def refresh_screen(new_log=None, clear=False):
                     cols = shutil.get_terminal_size((80, 20)).columns
                     plain_msg = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', msg)
                     lines_occupied = max(1, (len(plain_msg) // cols) + 1)
                     sys.stdout.write("\r")
-                    if lines_occupied > 1: sys.stdout.write(f"\033[{lines_occupied - 1}A")
+                    if lines_occupied > 1: 
+                        sys.stdout.write(f"\033[{lines_occupied - 1}A")
                     sys.stdout.write("\033[J")
                     if not clear:
-                        if new_log: sys.stdout.write(new_log + "\n")
+                        if new_log: 
+                            sys.stdout.write(new_log + "\n")
                         sys.stdout.write(msg)
                     sys.stdout.flush()
 
@@ -798,36 +1491,50 @@ def main():
                     import msvcrt
                     try:
                         while True:
-                            if msvcrt.kbhit() and msvcrt.getch().lower() == b'q': break
-                            while not q.empty(): refresh_screen(q.get_nowait())
+                            if msvcrt.kbhit() and msvcrt.getch().lower() == b'q': 
+                                break
+                            while not q.empty(): 
+                                refresh_screen(q.get_nowait())
                             time.sleep(0.05)
-                    except KeyboardInterrupt: pass
+                    except KeyboardInterrupt: 
+                        pass
                 else:
                     import select
                     try:
                         while True:
-                            while not q.empty(): refresh_screen(q.get_nowait())
+                            while not q.empty(): 
+                                refresh_screen(q.get_nowait())
                             if sys.stdin in select.select([sys.stdin], [], [], 0.05)[0]:
-                                if sys.stdin.read(1).lower() == 'q': break
-                    except KeyboardInterrupt: pass
+                                if sys.stdin.read(1).lower() == 'q': 
+                                    break
+                    except KeyboardInterrupt: 
+                        pass
                 
                 for p in procs:
-                    try: p.terminate()
-                    except: pass
-                refresh_screen(clear=True); continue
+                    try: 
+                        p.terminate()
+                    except: 
+                        pass
+                refresh_screen(clear=True)
+                continue
 
             selected = []
-            if choice in ['toutes', 'all', '*']: selected = [m['name'] for m in m_list]
+            if choice in ['toutes', 'all', '*']: 
+                selected = [m['name'] for m in m_list]
             else:
                 try:
                     raw = choice.replace(' ', ',')
                     indexes = [int(x) - 1 for x in raw.split(',') if x.isdigit()]
                     selected = [m_list[i]['name'] for i in indexes if 0 <= i < len(m_list)]
-                except: continue
+                except: 
+                    continue
             
-            if selected: menu_actions(selected, current_user, current_role)
+            if selected: 
+                menu_actions(selected, current_user, current_role)
 
 if __name__ == "__main__":
-    try: main()
+    try: 
+        main()
     except KeyboardInterrupt: 
-        print(f"\n\n{C_OK}Master Console arretee brutalement. Au revoir !{C_END}"); sys.exit(0)
+        print(f"\n\n{C_OK}Master Console arretee brutalement. Au revoir !{C_END}")
+        sys.exit(0)

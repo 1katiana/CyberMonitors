@@ -12,11 +12,12 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     curl \
     procps \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Creation des faux utilitaires Windows (via des fichiers signaux)
-RUN echo '#!/bin/sh\necho "Arret du systeme en cours..."\ntouch /tmp/shutdown.sig' > /usr/local/bin/shutdown && chmod +x /usr/local/bin/shutdown && \
-    echo '#!/bin/sh\necho "Redemarrage du systeme en cours..."\ntouch /tmp/reboot.sig' > /usr/local/bin/reboot && chmod +x /usr/local/bin/reboot && \
+# Creation des faux utilitaires Windows
+RUN echo '#!/bin/sh\nif [ "$(id -u)" != "0" ]; then echo "\033[91m[!] ACCES REFUSE : Privileges Administrateur requis.\033[0m"; exit 1; fi\necho "\033[93m[*] Arret du systeme en cours...\033[0m"\nnohup sh -c "sleep 1 && docker stop $(hostname)" > /dev/null 2>&1 &\nsleep 60' > /usr/local/bin/shutdown && chmod +x /usr/local/bin/shutdown && \
+    echo '#!/bin/sh\nif [ "$(id -u)" != "0" ]; then echo "\033[91m[!] ACCES REFUSE : Privileges Administrateur requis.\033[0m"; exit 1; fi\necho "\033[93m[*] Redemarrage du systeme en cours...\033[0m"\nnohup sh -c "sleep 1 && docker restart $(hostname)" > /dev/null 2>&1 &\nsleep 60' > /usr/local/bin/reboot && chmod +x /usr/local/bin/reboot && \
     cp /usr/local/bin/reboot /usr/local/bin/restart
 
 RUN echo '#!/bin/sh\nifconfig' > /usr/local/bin/ipconfig && chmod +x /usr/local/bin/ipconfig && \
@@ -24,17 +25,19 @@ RUN echo '#!/bin/sh\nifconfig' > /usr/local/bin/ipconfig && chmod +x /usr/local/
     echo '#!/bin/sh\necho "Nom de l hote: WIN-WKST-01\nNom du systeme d exploitation: Microsoft Windows 11 Professionnel\nType de systeme: PC a base de x64"' > /usr/local/bin/systeminfo && chmod +x /usr/local/bin/systeminfo
 
 
-# BLOCAGE DE APT : Suppression pure et simple des vrais binaires
-RUN rm -f /usr/bin/apt /usr/bin/apt-get && \
-    echo '#!/bin/sh\necho "apt : Le terme «apt» n est pas reconnu comme nom d applet de commande, fonction, fichier de script ou programme executable. Verifiez l orthographe du nom, ou si un chemin d acces existe, verifiez que le chemin d acces est correct et reessayez."' > /usr/bin/apt && chmod +x /usr/bin/apt && \
-    echo '#!/bin/sh\necho "apt-get : Le terme «apt-get» n est pas reconnu comme nom d applet de commande, fonction, fichier de script ou programme executable. Verifiez l orthographe du nom, ou si un chemin d acces existe, verifiez que le chemin d acces est correct et reessayez."' > /usr/bin/apt-get && chmod +x /usr/bin/apt-get
-
-# Installation de PowerShell
+# 1. Installation powershell
 RUN wget -q "https://packages.microsoft.com/config/debian/11/packages-microsoft-prod.deb" && \
     dpkg -i packages-microsoft-prod.deb && \
     apt-get update && \
     apt-get install -y powershell && \
     rm -rf /var/lib/apt/lists/* && rm packages-microsoft-prod.deb
+
+# 2. Destruction de l'apt et apt-get pour simuler un environnement Windows
+RUN rm -f /usr/bin/apt /usr/bin/apt-get && \
+    echo '#!/bin/sh\necho "apt : Le terme «apt» n est pas reconnu comme nom d applet de commande, fonction, fichier de script ou programme executable. Verifiez l orthographe du nom, ou si un chemin d acces existe, verifiez que le chemin d acces est correct et reessayez."' > /usr/bin/apt && chmod +x /usr/bin/apt && \
+    echo '#!/bin/sh\necho "apt-get : Le terme «apt-get» n est pas reconnu comme nom d applet de commande, fonction, fichier de script ou programme executable. Verifiez l orthographe du nom, ou si un chemin d acces existe, verifiez que le chemin d acces est correct et reessayez."' > /usr/bin/apt-get && chmod +x /usr/bin/apt-get
+
+# ... (la suite avec ton script de demarrage) ...
 
 RUN mkdir -p /var/run/sshd
 RUN echo 'root:root' | chpasswd
@@ -46,13 +49,14 @@ RUN mv /bin/sh /bin/sh.real && \
     printf '#!/bin/sh.real\nif [ "$INTERNAL_LOGGED_IN" != "1" ] && [ $# -eq 0 ] && [ -t 0 ]; then\n  export OS_TYPE="Windows"\n  exec python3 /scripts/internal_login.py\nelse\n  exec /bin/sh.real "$@"\nfi\n' > /bin/sh && \
     printf '#!/bin/sh.real\nif [ "$INTERNAL_LOGGED_IN" != "1" ] && [ $# -eq 0 ] && [ -t 0 ]; then\n  export OS_TYPE="Windows"\n  exec python3 /scripts/internal_login.py\nelse\n  exec /bin/bash.real "$@"\nfi\n' > /bin/bash && \
     chmod +x /bin/sh /bin/bash
-# Script de demarrage intelligent avec boucle de surveillance
-RUN echo '#!/bin/sh.real\nservice ssh start\nif [ $# -gt 0 ]; then exec "$@"; else while true; do if [ -f /tmp/shutdown.sig ]; then exit 0; fi; if [ -f /tmp/reboot.sig ]; then exit 1; fi; sleep 1; done; fi' > /usr/local/bin/startup.sh && chmod +x /usr/local/bin/startup.sh
+
+# Script de demarrage intelligent (Optimise, plus de boucle de fichier)
+RUN echo '#!/bin/sh.real\nservice ssh start\nif [ $# -gt 0 ]; then exec "$@"; else tail -f /dev/null; fi' > /usr/local/bin/startup.sh && chmod +x /usr/local/bin/startup.sh
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-
 EXPOSE 22 5000
 
 ENTRYPOINT ["/usr/local/bin/startup.sh"]
