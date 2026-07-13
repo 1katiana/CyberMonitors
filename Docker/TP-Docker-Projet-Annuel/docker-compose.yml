@@ -26,6 +26,7 @@ services:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
+  
     networks:
       - monitoring-net
     env_file:
@@ -53,7 +54,6 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    restart: on-failure
 
   linux-srv-2:
     build: .
@@ -67,7 +67,6 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    restart: on-failure
 
   # --- PARC SIMULÉ : POSTES WINDOWS ---
   win-wkst-1:
@@ -85,7 +84,6 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    restart: on-failure
 
   win-wkst-2:
     build: 
@@ -102,7 +100,6 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    restart: on-failure
 
   # --- SERVEUR WINDOWS CRITIQUE ---
   win-srv-indispensable:
@@ -120,7 +117,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    restart: always
+    
 
 networks:
   monitoring-net:
