@@ -7,3 +7,6 @@ pandas
 cryptography
 bcrypt
 docker
+pyotp
+qrcode
+pillow
