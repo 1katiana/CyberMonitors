@@ -49,6 +49,8 @@ services:
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-01
+    env_file:
+      - .env
     container_name: linux-srv-1
     volumes:
       - ./scripts:/scripts
@@ -63,6 +65,8 @@ services:
     environment:
       - OS_TYPE=Linux
       - MACHINE_NAME=SRV-LINUX-02
+    env_file:
+      - .env
     container_name: linux-srv-2
     volumes:
       - ./scripts:/scripts
@@ -78,6 +82,8 @@ services:
       context: .
       dockerfile: Dockerfile.windows
     tty: true
+    env_file:
+      - .env
     container_name: win-wkst-1
     environment:
       - OS_TYPE=Windows
@@ -95,6 +101,8 @@ services:
       context: .
       dockerfile: Dockerfile.windows
     tty: true
+    env_file:
+      - .env
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=WKST-WIN-02
@@ -113,6 +121,8 @@ services:
       context: .
       dockerfile: Dockerfile.windows
     tty: true
+    env_file:
+      - .env
     environment:
       - OS_TYPE=Windows
       - MACHINE_NAME=SRV-WIN-CORE

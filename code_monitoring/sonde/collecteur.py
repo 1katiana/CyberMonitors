@@ -40,6 +40,18 @@ def initialiser_db():
                     users_count INTEGER
                 )
             """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS security_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
+                    machine_name TEXT,
+                    username TEXT,
+                    event_type TEXT,
+                    severity TEXT,
+                    details TEXT
+                )
+            """)
         
         conn.commit()
         conn.close()

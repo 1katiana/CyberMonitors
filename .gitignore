@@ -11,6 +11,7 @@ __pycache__/
 # Data & Generated Files
 code_monitoring/dashboard/static/graphs/*.svg
 Data/*.db
+
 !Data/.gitkeep
 *.db-journal
 *.db-shm
@@ -22,7 +23,10 @@ Data/backups/
 
 # Comptes utilisateurs et mots de passe
 Data/Users/*.json
+Data/Users/.users_docker.hmac
+Data/Users/.users_docker.shadow.enc
 !Data/Users/.gitkeep
+
 
 # Temporary/Old versions
 dashboard0/
@@ -30,6 +34,8 @@ dashboard1/
 dashboard2/
 #mot de passe 
 .env
+
+
 
 # Logs
 Data/Logs/*.log

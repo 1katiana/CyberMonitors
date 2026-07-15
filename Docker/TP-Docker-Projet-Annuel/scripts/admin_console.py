@@ -1,10 +1,11 @@
+import builtins
+import getpass
+import sys
+import time
 import os
 import subprocess
-import time
-import sys
 import threading
 import queue
-import getpass
 import bcrypt
 import shutil
 import re
@@ -19,11 +20,95 @@ import zipfile
 import io
 import zlib  
 import stat  
+import hmac
+import hashlib
+import random
 from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
-# *** NOUVEAU BLOC : DETECTION DOCKER ***
+# *** PROTECTION GLOBALE : CRASH CTRL+D ET TIMEOUT D'INACTIVITE ***
+def input_with_timeout(prompt="", timeout=300, is_password=False):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    start_time = time.time()
+    input_str = ""
+    
+    if os.name == 'nt':
+        import msvcrt
+        while True:
+            if msvcrt.kbhit():
+                start_time = time.time() # Reinitialise le chrono a chaque frappe
+                c = msvcrt.getch()
+                if c == b'\r' or c == b'\n':
+                    print()
+                    return input_str
+                elif c == b'\x08': # Backspace
+                    if len(input_str) > 0:
+                        input_str = input_str[:-1]
+                        if not is_password:
+                            sys.stdout.write('\b \b')
+                            sys.stdout.flush()
+                elif c == b'\x03' or c == b'\x04': # Ctrl+C / Ctrl+D
+                    print()
+                    return ""
+                else:
+                    try:
+                        char = c.decode('utf-8')
+                        input_str += char
+                        if not is_password:
+                            sys.stdout.write(char)
+                            sys.stdout.flush()
+                    except:
+                        pass
+            if time.time() - start_time > timeout:
+                print("\n\n\033[91m[!] ALERTE DE SECURITE : Session expiree suite a 5 minutes d'inactivite.\033[0m")
+                sys.exit(0)
+            time.sleep(0.05)
+    else:
+        import select
+        import termios
+        
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        if is_password:
+            new_settings = termios.tcgetattr(fd)
+            new_settings[3] = new_settings[3] & ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+            
+        try:
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if ready:
+                    line = sys.stdin.readline()
+                    if is_password:
+                        print()
+                    if not line:
+                        return ""
+                    return line.rstrip('\n')
+                if time.time() - start_time > timeout:
+                    if is_password:
+                        print()
+                    print("\n\n\033[91m[!] ALERTE DE SECURITE : Session expiree suite a 5 minutes d'inactivite.\033[0m")
+                    sys.exit(0)
+        finally:
+            if is_password:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+def safe_input(prompt=""):
+    return input_with_timeout(prompt, timeout=300, is_password=False)
+
+def safe_getpass(prompt=""):
+    return input_with_timeout(prompt, timeout=300, is_password=True)
+
+builtins.input = safe_input
+getpass.getpass = safe_getpass
+
+# *** PARAMETRES DE SECURITE ***
+SEUIL_CRITIQUE = 10       
+SEUIL_AVERTISSEMENT = 3   
+
+# *** DETECTION DOCKER ***
 IN_DOCKER = os.getenv("IS_MASTER_CONSOLE") == "1"
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +119,8 @@ if IN_DOCKER:
     BACKUP_PREFS_DIR = "/infrastructure/code_monitoring/gestion de sauvegarde"
     BACKUP_DATA_DIR  = "/infrastructure/Data/backups"
     USER_DATA_PATH   = "/infrastructure/Data/Users/users_docker.json"
+    HMAC_SIGN_FILE   = "/infrastructure/Data/Users/.users_docker.hmac"
+    SHADOW_BACKUP    = "/infrastructure/Data/Users/.users_docker.shadow.enc"
     env_path         = "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env"
 else:
     ROOT_BACKUP_DIR  = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
@@ -41,6 +128,8 @@ else:
     BACKUP_PREFS_DIR = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "code_monitoring", "gestion de sauvegarde"))
     BACKUP_DATA_DIR  = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "backups"))
     USER_DATA_PATH   = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", "users_docker.json"))
+    HMAC_SIGN_FILE   = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", ".users_docker.hmac"))
+    SHADOW_BACKUP    = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "Data", "Users", ".users_docker.shadow.enc"))
     env_path         = os.path.abspath(os.path.join(current_dir, "..", ".env"))
 
 os.makedirs(log_dir, exist_ok=True)
@@ -59,6 +148,29 @@ C_OK = '\033[92m'
 C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
+
+def display_lockout_screen(lock_until):
+    while True:
+        remaining = int(lock_until - time.time())
+        if remaining <= 0:
+            break
+        
+        m, s = divmod(remaining, 60)
+        h, m = divmod(m, 60)
+        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(f"{C_DANGER}==================================================={C_END}")
+        print(f"{C_DANGER}       ALERTE DE SECURITE : ACCES VERROUILLE       {C_END}")
+        print(f"{C_DANGER}==================================================={C_END}\n")
+        print(f"{C_WARN}Suite a de multiples tentatives de connexion echouees,{C_END}")
+        print(f"{C_WARN}ce terminal a ete temporairement suspendu pour des{C_END}")
+        print(f"{C_WARN}raisons de securite.{C_END}\n")
+        print(f"{C_DANGER}[!] CET INCIDENT A ETE REPORTE AUX ADMINISTRATEURS [!]{C_END}\n")
+        print(f"Temps restant avant deblocage automatique : {C_WARN}{h:02d}h {m:02d}m {s:02d}s{C_END}")
+        
+        time.sleep(1)
+    
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 # *** CHIFFREMENT (FERNET) VIA .ENV ***
 load_dotenv(dotenv_path=env_path)
@@ -88,12 +200,129 @@ def decrypt_val(val):
     except:
         return "[Erreur Dechiffrement]"
 
+def calculate_hmac(file_path):
+    if not env_key: return None
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        return hmac.new(env_key.encode('utf-8'), data, hashlib.sha256).hexdigest()
+    except: return None
+
+# *** ARCHITECTURE SHADOW BACKUP ***
+def atomic_update_database(json_path, data):
+    """Met a jour le JSON, le HMAC et le Shadow Backup en une seule operation."""
+    with open(json_path, 'w') as f:
+        json.dump(data, f, indent=4)
+    
+    new_hmac = calculate_hmac(json_path)
+    if new_hmac:
+        with open(HMAC_SIGN_FILE, 'w') as f:
+            f.write(new_hmac)
+            
+    try:
+        encrypted_shadow = cipher.encrypt(json.dumps(data).encode('utf-8'))
+        with open(SHADOW_BACKUP, 'wb') as f:
+            f.write(encrypted_shadow)
+    except Exception as e:
+        logging.error(f"[SHADOW BACKUP] Erreur d'ecriture : {e}")
+
+def restore_from_backup(json_path):
+    """Restaure depuis le Shadow Backup en priorite, sinon depuis le ZIP."""
+    if os.path.exists(SHADOW_BACKUP):
+        try:
+            with open(SHADOW_BACKUP, "rb") as f:
+                decrypted = cipher.decrypt(f.read())
+            with open(json_path, "wb") as f:
+                f.write(decrypted)
+            new_hmac = calculate_hmac(json_path)
+            if new_hmac:
+                with open(HMAC_SIGN_FILE, 'w') as f:
+                    f.write(new_hmac)
+            return True
+        except:
+            pass
+
+    all_backups = glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc"))
+    if not all_backups:
+        return False
+        
+    latest_backup = max(all_backups, key=os.path.getctime)
+    try:
+        with open(latest_backup, "rb") as f:
+            encrypted_data = f.read()
+        decrypted_data = cipher.decrypt(encrypted_data)
+        restored = False
+        with zipfile.ZipFile(io.BytesIO(decrypted_data)) as z:
+            for member in z.namelist():
+                if "users_docker.json" in member:
+                    with open(json_path, "wb") as target_f:
+                        target_f.write(z.read(member))
+                    restored = True
+                    break
+        if restored:
+            new_hmac = calculate_hmac(json_path)
+            if new_hmac:
+                with open(HMAC_SIGN_FILE, 'w') as f:
+                    f.write(new_hmac)
+            
+            # Reconstruction automatique du Shadow Backup apres restauration ZIP
+            try:
+                with open(json_path, 'r') as f:
+                    data = json.load(f)
+                encrypted_shadow = cipher.encrypt(json.dumps(data).encode('utf-8'))
+                with open(SHADOW_BACKUP, 'wb') as f:
+                    f.write(encrypted_shadow)
+            except:
+                pass
+            return True
+    except:
+        pass
+    return False
+
+def verify_and_restore_integrity(json_path):
+    trigger_restore = False
+    reason = ""
+    
+    if not os.path.exists(json_path):
+        if not os.path.exists(SHADOW_BACKUP) and not glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc")):
+            return 
+        trigger_restore = True
+        reason = "Fichier JSON principal introuvable (Suppression suspecte)."
+    else:
+        current_hmac = calculate_hmac(json_path)
+        if os.path.exists(HMAC_SIGN_FILE):
+            with open(HMAC_SIGN_FILE, 'r') as f:
+                stored_hmac = f.read().strip()
+            if current_hmac != stored_hmac:
+                trigger_restore = True
+                reason = "Fichier JSON modifie manuellement (Signature invalide)."
+        else:
+            if not os.path.exists(SHADOW_BACKUP) and not glob.glob(os.path.join(BACKUP_DATA_DIR, "*.zip.enc")):
+                if current_hmac:
+                    with open(HMAC_SIGN_FILE, 'w') as f: f.write(current_hmac)
+                return
+            trigger_restore = True
+            reason = "Fichier de signature HMAC introuvable."
+    
+    if trigger_restore:
+        print(f"\n{C_DANGER}[!!!] ALERTE VIOLATION D'INTEGRITE [!!!]{C_END}")
+        print(f"{C_WARN}{reason}{C_END}")
+        print(f"{C_BASE}[*] Tentative de restauration automatique...{C_END}")
+        logging.critical(f"[INTEGRITE] {reason} Restauration declenchee.")
+        
+        if restore_from_backup(json_path):
+            print(f"{C_OK}[+] Base de donnees restauree avec succes.{C_END}\n")
+            time.sleep(2)
+        else:
+            print(f"{C_DANGER}[!] Erreur fatale : Impossible de restaurer la base. Systeme verrouille.{C_END}")
+            time.sleep(4)
+            sys.exit(1)
+
 # *** CONFIGURATION DES BACKUPS ***
 os.makedirs(BACKUP_PREFS_DIR, exist_ok=True)
 BACKUP_CONFIG_FILE = os.path.join(BACKUP_PREFS_DIR, "backup_config.json")
 os.makedirs(BACKUP_DATA_DIR, exist_ok=True)
 
-# *** DICTIONNAIRE TELEPHONIQUE ***
 COUNTRIES = {
     'fr': {'code': '+33', 'len': 9, 'name': 'France'},
     'be': {'code': '+32', 'len': 9, 'name': 'Belgique'},
@@ -127,6 +356,16 @@ class DBLock:
             os.remove(self.lockfile)
         except Exception: 
             pass
+
+def safe_update_user(json_path, username, updates):
+    with DBLock(json_path):
+        verify_and_restore_integrity(json_path)
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        if username in data:
+            for k, v in updates.items():
+                data[username][k] = v
+            atomic_update_database(json_path, data)
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -174,12 +413,172 @@ def is_unique(users, field, value):
             return False
     return True
 
+def manage_own_profile(current_user):
+    clear_screen()
+    print(f"{C_BASE}*** MON PROFIL ({current_user}) ***{C_END}\n")
+    
+    print(f"{C_WARN}Pour des raisons de securite, veuillez confirmer votre mot de passe.{C_END}")
+    pwd = getpass.getpass("Mot de passe : ").strip()
+    
+    try:
+        with DBLock(USER_DATA_PATH):
+            verify_and_restore_integrity(USER_DATA_PATH)
+            with open(USER_DATA_PATH, 'r') as f:
+                users = json.load(f)
+    except Exception as e:
+        print(f"{C_DANGER}Erreur de lecture du fichier : {e}{C_END}")
+        time.sleep(2)
+        return
+
+    stored_hash = users[current_user].get("password", "").encode('utf-8')
+    try:
+        match = bcrypt.checkpw(pwd.encode('utf-8'), stored_hash)
+    except:
+        match = False
+        
+    if not match:
+        print(f"{C_DANGER}[!] Mot de passe incorrect.{C_END}")
+        time.sleep(2)
+        return
+
+    while True:
+        try:
+            with DBLock(USER_DATA_PATH):
+                verify_and_restore_integrity(USER_DATA_PATH)
+                with open(USER_DATA_PATH, 'r') as f:
+                    users = json.load(f)
+        except Exception as e:
+            print(f"{C_DANGER}Erreur de lecture : {e}{C_END}")
+            time.sleep(2)
+            break
+            
+        u_data = users[current_user]
+        clear_screen()
+        print(f"{C_BASE}=== VOS INFORMATIONS ==={C_END}\n")
+        print(f"Nom        : {decrypt_val(u_data.get('nom', ''))}")
+        print(f"Prenom     : {decrypt_val(u_data.get('prenom', ''))}")
+        print(f"Email      : {decrypt_val(u_data.get('email', ''))}")
+        print(f"Telephone  : {decrypt_val(u_data.get('phone', ''))}")
+        print(f"Entreprise : {decrypt_val(u_data.get('entreprise', ''))}")
+        print(f"Secteur    : {decrypt_val(u_data.get('secteur', ''))}")
+        print(f"Poste      : {decrypt_val(u_data.get('poste', ''))}")
+        
+        print(f"\n{C_OK}*** QUE VOULEZ-VOUS MODIFIER ? ***{C_END}")
+        print("1. Mon Email")
+        print("2. Mon Telephone")
+        print("3. Mes Informations Pro (Entreprise, Secteur, Poste)")
+        print("4. Mon Mot de passe")
+        print("0. Retour au menu principal")
+        
+        choice = input("\nChoix : ").strip()
+        if choice == '0' or choice == '':
+            break
+            
+        field_updates = {}
+        
+        if choice == '1':
+            em = input("Nouvel Email (vide pour vider) : ").strip()
+            if em and not re.match(r"^[^@]+@[^@]+\.[^@]+$", em):
+                print(f"{C_DANGER}Format invalide.{C_END}")
+                time.sleep(2)
+                continue
+            if em and not is_unique(users, "email", em):
+                print(f"{C_DANGER}Email deja utilise.{C_END}")
+                time.sleep(2)
+                continue
+            field_updates["email"] = encrypt_val(em if em else "Non renseigne")
+            
+        elif choice == '2':
+            c_code = input("Code pays (ex: FR, 'liste' pour voir, vide pour vider) : ").strip().lower()
+            if not c_code: 
+                field_updates["phone"] = encrypt_val("Non renseigne")
+            else:
+                if c_code == 'liste':
+                    for k, v in COUNTRIES.items(): 
+                        print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                    input("Appuyez sur Entree...")
+                    continue
+                if c_code not in COUNTRIES:
+                    print(f"{C_DANGER}Pays inconnu.{C_END}")
+                    time.sleep(2)
+                    continue
+                country = COUNTRIES[c_code]
+                num = input(f"Numero {country['code']} : ").strip()
+                num = num.replace(" ", "").replace(".", "").replace("-", "")
+                if num.startswith(country['code']): 
+                    num = num[len(country['code']):]
+                if num.startswith('0'): 
+                    num = num[1:]
+                if len(num) != country['len']:
+                    print(f"{C_DANGER}Taille invalide pour {c_code.upper()}.{C_END}")
+                    time.sleep(2)
+                    continue
+                full = country['code'] + num
+                if not is_unique(users, "phone", full):
+                    print(f"{C_DANGER}Numero deja utilise.{C_END}")
+                    time.sleep(2)
+                    continue
+                field_updates["phone"] = encrypt_val(full)
+                
+        elif choice == '3':
+            ent = input("Entreprise (vide=conserver, 'vider'=effacer) : ").strip()
+            sec = input("Secteur (vide=conserver, 'vider'=effacer) : ").strip()
+            pos = input("Poste (vide=conserver, 'vider'=effacer) : ").strip()
+            if ent: 
+                field_updates["entreprise"] = encrypt_val("Non renseigne" if ent.lower() == 'vider' else ent)
+            if sec: 
+                field_updates["secteur"] = encrypt_val("Non renseigne" if sec.lower() == 'vider' else sec)
+            if pos: 
+                field_updates["poste"] = encrypt_val("Non renseigne" if pos.lower() == 'vider' else pos)
+                
+        elif choice == '4':
+            print("\nChangement de mot de passe :")
+            cancel_pwd = False
+            while True:
+                new_pwd = getpass.getpass("Nouveau mot de passe ('0' pour annuler) : ").strip()
+                if new_pwd == '0' or new_pwd == '': 
+                    cancel_pwd = True
+                    break
+                missing = check_password_complexity(new_pwd)
+                if missing: 
+                    print(f"{C_DANGER}Invalide. Manque : {', '.join(missing)}{C_END}")
+                    continue
+                
+                try:
+                    if bcrypt.checkpw(new_pwd.encode('utf-8'), stored_hash):
+                        print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}")
+                        continue
+                except: pass
+                
+                confirm = getpass.getpass("Confirmez : ").strip()
+                if new_pwd != confirm: 
+                    print(f"{C_DANGER}Correspondance echouee.{C_END}")
+                    continue
+                break
+                
+            if cancel_pwd: 
+                continue
+            
+            field_updates["password"] = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            logging.info(f"[{current_user}] a change son propre mot de passe.")
+
+        if field_updates:
+            try:
+                safe_update_user(USER_DATA_PATH, current_user, field_updates)
+                print(f"{C_OK}[+] Vos informations ont ete mises a jour avec succes.{C_END}")
+                logging.info(f"[{current_user}] a mis a jour son profil.")
+                time.sleep(2)
+            except Exception as e: 
+                print(f"{C_DANGER}Erreur de sauvegarde : {e}{C_END}")
+                time.sleep(3)
+
 # *** PATCH DE LA BASE DE DONNEES ***
 def patch_database():
     try:
         if not os.path.exists(USER_DATA_PATH): 
             return
         with DBLock(USER_DATA_PATH):
+            verify_and_restore_integrity(USER_DATA_PATH)
             with open(USER_DATA_PATH, 'r') as f: 
                 users = json.load(f)
             changed = False
@@ -198,9 +597,8 @@ def patch_database():
                     changed = True
             
             if changed:
-                with open(USER_DATA_PATH, 'w') as f: 
-                    json.dump(users, f, indent=4)
-                logging.info("Mise a jour de la base de donnees effectuee.")
+                atomic_update_database(USER_DATA_PATH, users)
+                logging.info("Mise a jour de la base de donnees effectuee (Signature HMAC incluse).")
     except Exception as e:
         logging.error(f"Erreur lors du patch de la BDD : {e}")
 
@@ -237,7 +635,6 @@ def run_full_backup(current_admin, silent=False):
     def zip_task():
         with zipfile.ZipFile(temp_zip_base + ".zip", 'w', zipfile.ZIP_DEFLATED) as zf:
             for root, _, files in os.walk(target_dir):
-                # On ne sauvegarde SURTOUT PAS le dossier des backups
                 if os.path.abspath(BACKUP_DATA_DIR) in os.path.abspath(root): 
                     continue
                 for f in files:
@@ -339,7 +736,7 @@ def decrypt_existing_backup(current_admin):
     
     try:
         c = input("\nQuelle archive dechiffrer ? (Numero) : ").strip()
-        if c == '0':
+        if c == '0' or c == '':
             return
             
         c = int(c)
@@ -391,7 +788,7 @@ def list_backup_contents(current_admin):
     
     try:
         c = input("\nQuelle archive inspecter ? (Numero) : ").strip()
-        if c == '0':
+        if c == '0' or c == '':
             return
             
         c = int(c)
@@ -460,7 +857,7 @@ def restore_backup(current_admin):
     
     try:
         c = input("\nArchive a restaurer ? (Numero) : ").strip()
-        if c == '0':
+        if c == '0' or c == '':
             return
             
         c = int(c)
@@ -539,7 +936,7 @@ def manual_delete_backup(current_admin):
     
     try:
         c = input("\nArchive a supprimer ? (Numero) : ").strip()
-        if c == '0':
+        if c == '0' or c == '':
             return
             
         c = int(c)
@@ -591,6 +988,7 @@ def open_backup_menu(current_admin):
     
     try:
         with DBLock(USER_DATA_PATH):
+            verify_and_restore_integrity(USER_DATA_PATH)
             with open(USER_DATA_PATH, 'r') as f:
                 users = json.load(f)
     except Exception as e:
@@ -675,66 +1073,153 @@ def open_backup_menu(current_admin):
             else:
                 print(f"{C_DANGER}Valeur invalide (doit etre superieure ou egale a 1).{C_END}")
                 time.sleep(2)
-        elif choix == "0":
+        elif choix == "0" or choix == "":
             break
 
-# *** GESTION AUTHENTIFICATION & UTILISATEURS ***
 def authenticate():
-    for attempt in range(3, 0, -1):
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
+    while True:
         clear_screen()
         print(f"{C_WARN}*** ACCES RESTREINT : AUTHENTIFICATION REQUISE ***{C_END}")
         print(f"Connexion a la Master Console.\n")
         
         user = input("Identifiant : ").strip().lower()
-        pwd = getpass.getpass("Mot de passe : ").strip()
-        
+        if not user:
+            continue
+            
+        pwd_input = getpass.getpass("Mot de passe : ").strip()
         print()
         
         try:
             with DBLock(USER_DATA_PATH):
+                verify_and_restore_integrity(USER_DATA_PATH)
                 with open(USER_DATA_PATH, 'r') as f:
                     valid_users = json.load(f)
         except Exception as e:
             print(f"{C_DANGER}[!] ERREUR 100 : Impossible de lire la base. Details: {e}{C_END}")
             time.sleep(4)
             return None, None
-        
-        stored_hash_str = valid_users.get(user, {}).get("password", "")
-        stored_hash = stored_hash_str.encode('utf-8')
+
+        user_exists = user in valid_users
+        stored_hash = valid_users.get(user, {}).get("password", "").encode('utf-8') if user_exists else bcrypt.hashpw(b"dummy", bcrypt.gensalt())
         
         try:
-            password_match = bcrypt.checkpw(pwd.encode('utf-8'), stored_hash)
+            password_match = bcrypt.checkpw(pwd_input.encode('utf-8'), stored_hash)
         except ValueError:
             password_match = False
 
-        if user not in valid_users or not password_match:
-            if user in valid_users and valid_users[user].get("reset_by_admin"):
-                print(f"{C_DANGER}[!] ACCES REFUSE : Votre mot de passe a ete reinitialise.{C_END}")
-                print(f"{C_WARN}Veuillez contacter l'administrateur pour obtenir votre mot de passe temporaire.{C_END}")
-                time.sleep(4)
-            else:
-                print(f"{C_DANGER}[!] ERREUR 200 : Identifiants incorrects.{C_END}")
-            
-            logging.warning(f"Tentative ECHOUEE (200) Identifiants incorrects pour: {user}")
-            if attempt > 1:
-                print(f"{C_WARN}Il vous reste {attempt - 1} essai(s).{C_END}")
-                time.sleep(2)
+        if not user_exists:
+            print(f"{C_DANGER}[!] ERREUR 200 : Identifiants incorrects.{C_END}")
+            time.sleep(2)
+            continue
+
+        user_data = valid_users[user]
+        current_time = time.time()
+        lock_until = user_data.get("lock_until", 0)
+        
+        if current_time < lock_until:
+            display_lockout_screen(lock_until)
+            continue
+
+        if not password_match:
+            failed_attempts = user_data.get("failed_attempts", 0) + 1
+            if failed_attempts >= 3 and failed_attempts % 3 == 0:
+                multiplier = 2 ** ((failed_attempts // 3) - 1)
+                lock_duration = 60 * multiplier
+                lock_until_new = current_time + lock_duration
+                safe_update_user(USER_DATA_PATH, user, {"failed_attempts": failed_attempts, "lock_until": lock_until_new})
+                logging.warning(f"[ALERTE] Compte {user} verrouille pour {lock_duration}s (Tentatives: {failed_attempts})")
+                display_lockout_screen(lock_until_new)
                 continue
             else:
-                print(f"{C_DANGER}[!] ACCES REFUSE. Incident enregistre.{C_END}")
-                time.sleep(3)
-                return None, None
+                safe_update_user(USER_DATA_PATH, user, {"failed_attempts": failed_attempts})
+                print(f"{C_DANGER}[!] ERREUR 200 : Identifiants incorrects.{C_END}")
+                logging.warning(f"Tentative ECHOUEE pour: {user}")
+                time.sleep(2)
+                continue
 
-        if valid_users[user].get("blocked", False):
+        if user_data.get("blocked", False):
             print(f"{C_DANGER}[!] ERREUR 403 : Ce compte a ete suspendu par un administrateur.{C_END}")
-            logging.warning(f"Tentative de connexion bloquee (Compte suspendu) pour : {user}")
             time.sleep(4)
             return None, None
 
-        if valid_users[user].get("force_reset"):
-            print(f"\n{C_WARN}[!] PREMIERE CONNEXION OU FUITE : Vous devez modifier votre mot de passe.{C_END}")
+        failed_count = user_data.get("failed_attempts", 0)
+
+        if failed_count > SEUIL_CRITIQUE:
+            print(f"\n{C_DANGER}[!] ALERTE MAXIMALE : {failed_count} TENTATIVES ECHOUEES DETECTEES [!]{C_END}")
+            print(f"{C_WARN}Par mesure de precaution, vous devez obligatoirement changer votre mot de passe.{C_END}\n")
+            logging.critical(f"[SECURITE] Reinitialisation forcee apres {failed_count} echecs pour {user}")
+            time.sleep(3)
+            safe_update_user(USER_DATA_PATH, user, {"force_reset": True})
+            user_data["force_reset"] = True
+
+        elif SEUIL_AVERTISSEMENT <= failed_count <= SEUIL_CRITIQUE:
+            print(f"\n{C_DANGER}==================================================={C_END}")
+            print(f"{C_DANGER}[!] AVERTISSEMENT DE SECURITE [!]{C_END}")
+            print(f"{C_WARN}Le systeme a detecte {failed_count} tentative(s) de connexion echouee(s){C_END}")
+            print(f"{C_WARN}sur votre identifiant depuis votre derniere session.{C_END}")
+            print(f"{C_DANGER}==================================================={C_END}\n")
+            logging.info(f"Notification de {failed_count} echecs precedents pour {user}")
+            
+            resp = input(f"{C_BASE}Etes-vous a l'origine de ces tentatives echouees ? (o/n) : {C_END}").strip().lower()
+            
+            if resp != 'o':
+                print(f"\n{C_WARN}[!] PROCEDURE DE SECURITE ENCLENCHEE : VERIFICATION D'IDENTITE{C_END}")
+                
+                fields_map = {
+                    "nom": "Nom de famille", "prenom": "Prenom", "email": "Adresse Email",
+                    "phone": "Numero de telephone", "entreprise": "Entreprise", 
+                    "secteur": "Secteur d'activite", "poste": "Poste occupe"
+                }
+                
+                available_fields = []
+                for k, display in fields_map.items():
+                    if k in user_data:
+                        dec = decrypt_val(user_data[k])
+                        if dec and dec not in ["Non renseigne", "[Erreur Dechiffrement]"]:
+                            available_fields.append((display, dec))
+                            
+                if available_fields:
+                    question, expected_answer = random.choice(available_fields)
+                    identity_confirmed = False
+                    
+                    for attempt_id in range(10, 0, -1):
+                        ans = input(f"[{attempt_id} essai(s)] Saisissez votre {question} : ").strip()
+                        if ans.lower() == expected_answer.lower():
+                            identity_confirmed = True
+                            break
+                        else:
+                            print(f"{C_DANGER}Reponse incorrecte.{C_END}")
+                    
+                    if identity_confirmed:
+                        print(f"{C_OK}[+] Identite confirmee.{C_END}")
+                        print(f"{C_WARN}Par precaution, vous devez modifier votre mot de passe immediatement.{C_END}")
+                        safe_update_user(USER_DATA_PATH, user, {"force_reset": True})
+                        user_data["force_reset"] = True
+                    else:
+                        print(f"{C_DANGER}[!] ERREUR : IDENTITE NON CONFIRMEE.{C_END}")
+                        print(f"{C_WARN}La session va etre interrompue pour des raisons de securite.{C_END}") 
+                        logging.warning(f"Echec de verification d'identite pour {user}")
+                        time.sleep(3)
+                        return None, None
+                else:
+                    print(f"{C_WARN}[!] Aucune information de profil disponible pour la verification.{C_END}")
+                    print(f"{C_WARN}Par mesure de precaution absolue, vous devez modifier votre mot de passe.{C_END}")
+                    safe_update_user(USER_DATA_PATH, user, {"force_reset": True})
+                    user_data["force_reset"] = True
+
+        if failed_count > 0:
+            safe_update_user(USER_DATA_PATH, user, {"failed_attempts": 0, "lock_until": 0})
+
+        if user_data.get("force_reset"):
+            print(f"\n{C_WARN}[!] MISE A JOUR DE SECURITE REQUISE.{C_END}")
+            print(f"Vous devez obligatoirement modifier votre mot de passe.\n")
             while True:
                 new_pwd = getpass.getpass("\nNouveau mot de passe : ").strip()
+                if not new_pwd:
+                    continue
                 missing = check_password_complexity(new_pwd)
                 if missing:
                     print(f"{C_DANGER}Mot de passe invalide. Il manque : {', '.join(missing)}{C_END}")
@@ -749,29 +1234,26 @@ def authenticate():
                     if bcrypt.checkpw(new_pwd.encode('utf-8'), stored_hash):
                         print(f"{C_DANGER}Le nouveau mot de passe doit etre different de l'ancien.{C_END}")
                         continue
-                except ValueError: 
-                    pass
+                except ValueError: pass
                 
                 new_hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 break
 
             try:
-                with DBLock(USER_DATA_PATH):
-                    with open(USER_DATA_PATH, 'r') as f: 
-                        fresh_users = json.load(f)
-                    fresh_users[user]["password"] = new_hashed
-                    fresh_users[user]["force_reset"] = False
-                    fresh_users[user]["reset_by_admin"] = False
-                    with open(USER_DATA_PATH, 'w') as f: 
-                        json.dump(fresh_users, f, indent=4)
+                safe_update_user(USER_DATA_PATH, user, {
+                    "password": new_hashed,
+                    "force_reset": False,
+                    "reset_by_admin": False
+                })
                 print(f"{C_OK}[+] Mot de passe mis a jour avec succes.{C_END}")
+                logging.info(f"Mot de passe reinitialise avec succes par {user}")
                 time.sleep(2)
             except Exception as e:
                 print(f"{C_DANGER}Erreur lors de la sauvegarde : {e}{C_END}")
                 time.sleep(3)
                 return None, None
 
-        role = valid_users[user].get("role", "user")
+        role = user_data.get("role", "user")
         logging.info(f"Connexion REUSSIE Utilisateur: {user} | Role: {role}")
         return user, role
 
@@ -782,6 +1264,7 @@ def manage_users(current_admin):
         
         try:
             with DBLock(USER_DATA_PATH):
+                verify_and_restore_integrity(USER_DATA_PATH)
                 with open(USER_DATA_PATH, 'r') as f: 
                     users = json.load(f)
         except Exception as e:
@@ -803,7 +1286,7 @@ def manage_users(current_admin):
         print("0. Retour")
         
         choice = input("\nAction : ").strip()
-        if choice == '0': 
+        if choice == '0' or choice == '': 
             break
 
         if choice in ['1', '2', '3']:
@@ -818,7 +1301,7 @@ def manage_users(current_admin):
             print(f"{C_WARN}Pour des raisons de securite liees aux donnees personnelles, veuillez vous authentifier.{C_END}")
             admin_pwd = getpass.getpass(f"Mot de passe de {current_admin} (ou '0' pour annuler) : ").strip()
             
-            if admin_pwd == '0': 
+            if admin_pwd == '0' or admin_pwd == '': 
                 print(f"\n{C_WARN}Action annulee.{C_END}")
                 time.sleep(2)
                 continue
@@ -966,7 +1449,7 @@ def manage_users(current_admin):
                     cancel_pwd = False
                     while True:
                         new_pwd = getpass.getpass("\nMot de passe temporaire ('0' pour annuler) : ").strip()
-                        if new_pwd == '0': 
+                        if new_pwd == '0' or new_pwd == '': 
                             cancel_pwd = True
                             break
                         missing = check_password_complexity(new_pwd)
@@ -1003,6 +1486,7 @@ def manage_users(current_admin):
 
                 try:
                     with DBLock(USER_DATA_PATH):
+                        verify_and_restore_integrity(USER_DATA_PATH)
                         with open(USER_DATA_PATH, 'r') as f: 
                             fresh_users = json.load(f)
                         fresh_users[new_user] = {
@@ -1020,8 +1504,7 @@ def manage_users(current_admin):
                             "secteur": encrypt_val(secteur if secteur else "Non renseigne"),
                             "poste": encrypt_val(poste if poste else "Non renseigne")
                         }
-                        with open(USER_DATA_PATH, 'w') as f: 
-                            json.dump(fresh_users, f, indent=4)
+                        atomic_update_database(USER_DATA_PATH, fresh_users)
                     print(f"\n{C_OK}[+] Utilisateur '{new_user}' cree avec succes.{C_END}")
                     logging.info(f"Creation compte: {new_user} par {current_admin}")
                 except Exception as e:
@@ -1030,7 +1513,7 @@ def manage_users(current_admin):
 
             elif choice == '2':
                 del_user = input("Identifiant de l'utilisateur a supprimer (ou '0' pour annuler) : ").strip().lower()
-                if del_user == '0': 
+                if del_user == '0' or del_user == '': 
                     print(f"\n{C_WARN}Action annulee.{C_END}")
                     time.sleep(2)
                     continue
@@ -1051,12 +1534,12 @@ def manage_users(current_admin):
 
                 try:
                     with DBLock(USER_DATA_PATH):
+                        verify_and_restore_integrity(USER_DATA_PATH)
                         with open(USER_DATA_PATH, 'r') as f: 
                             fresh_users = json.load(f)
                         if del_user in fresh_users:
                             del fresh_users[del_user]
-                            with open(USER_DATA_PATH, 'w') as f: 
-                                json.dump(fresh_users, f, indent=4)
+                            atomic_update_database(USER_DATA_PATH, fresh_users)
                             print(f"{C_OK}[-] Utilisateur '{del_user}' supprime.{C_END}")
                             logging.warning(f"Suppression du compte {del_user} par {current_admin}")
                         else:
@@ -1067,7 +1550,7 @@ def manage_users(current_admin):
 
             elif choice == '3':
                 target = input("Identifiant a inspecter (ou '0' pour annuler) : ").strip().lower()
-                if target == '0': 
+                if target == '0' or target == '': 
                     print(f"\n{C_WARN}Action annulee.{C_END}")
                     time.sleep(2)
                     continue
@@ -1079,6 +1562,7 @@ def manage_users(current_admin):
                 while True:
                     try:
                         with DBLock(USER_DATA_PATH):
+                            verify_and_restore_integrity(USER_DATA_PATH)
                             with open(USER_DATA_PATH, 'r') as f: 
                                 fresh_users = json.load(f)
                     except Exception as e: 
@@ -1116,7 +1600,7 @@ def manage_users(current_admin):
                     print("0. Retour au menu gestion")
                     
                     mod_choice = input("\nChoix : ").strip()
-                    if mod_choice == '0': 
+                    if mod_choice == '0' or mod_choice == '': 
                         break
                     
                     field_updates = {}
@@ -1204,7 +1688,7 @@ def manage_users(current_admin):
                             cancel_pwd = False
                             while True:
                                 new_pwd = getpass.getpass("\nNouveau MDP temporaire ('0' pour annuler) : ").strip()
-                                if new_pwd == '0': 
+                                if new_pwd == '0' or new_pwd == '': 
                                     cancel_pwd = True
                                     break
                                 missing = check_password_complexity(new_pwd)
@@ -1241,13 +1725,7 @@ def manage_users(current_admin):
 
                     if field_updates:
                         try:
-                            with DBLock(USER_DATA_PATH):
-                                with open(USER_DATA_PATH, 'r') as f: 
-                                    sync_users = json.load(f)
-                                for k, v in field_updates.items(): 
-                                    sync_users[target][k] = v
-                                with open(USER_DATA_PATH, 'w') as f: 
-                                    json.dump(sync_users, f, indent=4)
+                            safe_update_user(USER_DATA_PATH, target, field_updates)
                             print(f"{C_OK}[+] Action appliquee avec succes sur {target}.{C_END}")
                             time.sleep(2)
                         except Exception as e: 
@@ -1375,7 +1853,7 @@ def menu_actions(targets, current_user, current_role):
                 time.sleep(2)
             break
             
-        elif c == '0': 
+        elif c == '0' or c == '': 
             break
 
 def main():
@@ -1409,11 +1887,11 @@ def main():
                 print(f"{i+1}. {m['name']} {col}[{m['status']}]{C_END}")
             
             if current_role == "admin":
-                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'B' (Backups), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'B' (Backups), 'P' (Mon Profil), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
             elif current_role in ["moniteur", "monitoring"]:
-                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'P' (Mon Profil), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
             else:
-                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'D' (Deconnexion), 'Q' (Quitter){C_END}")
+                print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'P' (Mon Profil), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
                 
             choice = input(f"\n{C_WARN}Selection : {C_END}").lower().strip()
             
@@ -1424,6 +1902,9 @@ def main():
                 print(f"\n{C_WARN}Deconnexion...{C_END}")
                 time.sleep(2)
                 break 
+            if choice == 'p':
+                manage_own_profile(current_user)
+                continue
             if choice == 'u' and current_role == 'admin':
                 manage_users(current_user)
                 continue
