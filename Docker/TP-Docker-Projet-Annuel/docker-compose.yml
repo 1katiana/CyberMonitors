@@ -1,5 +1,5 @@
 services:
-  # --- COLLECTEUR (Le coeur qui remplit la base) ---
+  # --- COLLECTEUR ---
   cyber-monitor-collector:
     build:
       context: .
@@ -15,7 +15,7 @@ services:
     command: python /app/code_monitoring/sonde/collecteur.py
     restart: always
 
-  # --- DASHBOARD (L'interface visuelle) ---
+  # --- DASHBOARD ---
   cyber-dashboard:
     build:
       context: . 
@@ -25,20 +25,28 @@ services:
     volumes:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
-      - ../..:/infrastructure # Donne accès à tout le projet pour le backup
+      - ../..:/infrastructure
       - /var/run/docker.sock:/var/run/docker.sock
-  
     networks:
       - monitoring-net
     env_file:
       - .env
     environment:
-      - IS_MASTER_CONSOLE=1 # Active le piège du shell vers la console
+      - IS_MASTER_CONSOLE=1
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/code_monitoring 
-      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
-      - FLASK_SECRET_KEY=${FLASK_SECRET}
-    command: python /app/code_monitoring/dashboard/app.py 
+    # VERROU AUTOMATIQUE : Coupe le parc et attend la fin de l'initialisation
+    command: >
+      sh -c "
+      if [ ! -f /app/data/.initialized ]; then
+        echo '[SYSTEM] Premier demarrage. Arret automatique des agents...';
+        docker stop monitor_collector linux-srv-1 linux-srv-2 win-wkst-1 win-wkst-2 win-srv-indispensable || true;
+        echo '[SYSTEM] Parc arrete. En attente de votre configuration (docker exec)...';
+        while [ ! -f /app/data/.initialized ]; do sleep 2; done;
+      fi;
+      echo '[SYSTEM] Lancement du Dashboard...';
+      exec python /app/code_monitoring/dashboard/app.py
+      "
     depends_on:
       - cyber-monitor-collector
     restart: always
@@ -59,6 +67,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
+    restart: always
 
   linux-srv-2:
     build: .
@@ -75,6 +84,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
+    restart: always
 
   # --- PARC SIMULÉ : POSTES WINDOWS ---
   win-wkst-1:
@@ -95,6 +105,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
+    restart: always
 
   win-wkst-2:
     build: 
@@ -114,6 +125,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
+    restart: always
 
   # --- SERVEUR WINDOWS CRITIQUE ---
   win-srv-indispensable:
@@ -134,7 +146,7 @@ services:
     networks:
       - monitoring-net
     command: python /scripts/simu_agent.py
-    
+    restart: always
 
 networks:
   monitoring-net:

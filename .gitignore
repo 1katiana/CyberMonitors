@@ -36,6 +36,5 @@ dashboard2/
 .env
 
 
-
 # Logs
 Data/Logs/*.log
