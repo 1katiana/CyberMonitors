@@ -73,7 +73,7 @@ def clear_screen():
 
 def check_password_complexity(pwd):
     missing = []
-    if len(pwd) < 6: missing.append("6 caracteres minimum")
+    if len(pwd) < 12 : missing.append("12 caracteres minimum")
     if not any(c.isupper() for c in pwd): missing.append("une majuscule")
     if not any(c.islower() for c in pwd): missing.append("une minuscule")
     if not any(c.isdigit() for c in pwd): missing.append("un chiffre")

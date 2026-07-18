@@ -1,0 +1,46 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="max-width: 450px; margin: 50px auto; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #f75a68; text-align: center;">
+
+    <h2 style="color: #f75a68; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 10px;">
+        ⚠️ Action Requise
+    </h2>
+
+    <p style="color: #a8a8b3; font-size: 14px; text-align: left; margin-bottom: 25px; line-height: 1.5;">
+        Ceci est votre première connexion ou une réinitialisation de sécurité a été demandée.
+        <strong style="color: white;">Vous devez modifier votre mot de passe temporaire pour continuer.</strong>
+    </p>
+
+    <!-- Rappel visuel des règles de complexité -->
+    <div style="background: #0a0b10; border: 1px solid #30363d; padding: 15px; text-align: left; border-radius: 4px; margin-bottom: 20px;">
+        <h4 style="color: #00e5ff; margin-top: 0; font-size: 13px; text-transform: uppercase;">Complexité exigée</h4>
+        <ul style="color: #8b949e; font-size: 12px; margin-bottom: 0; padding-left: 20px;">
+            <li>Minimum 12 caractères</li>
+            <li>Au moins une lettre majuscule</li>
+            <li>Au moins une lettre minuscule</li>
+            <li>Au moins un chiffre</li>
+            <li>Au moins un caractère spécial (ponctuation)</li>
+        </ul>
+    </div>
+
+    <form method="POST" action="{{ url_for('force_reset_pwd') }}">
+        <div style="margin-bottom: 15px; text-align: left;">
+            <label style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 5px; display: block;">Nouveau mot de passe</label>
+            <input type="password" name="new_password" required
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <div style="margin-bottom: 25px; text-align: left;">
+            <label style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 5px; display: block;">Confirmer le mot de passe</label>
+            <input type="password" name="confirm_password" required
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <button type="submit" style="width: 100%; padding: 12px; background: #f75a68; color: white; border: none; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.3s;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+            SAUVEGARDER ET CONTINUER
+        </button>
+    </form>
+</div>
+{% endblock %}
+
+

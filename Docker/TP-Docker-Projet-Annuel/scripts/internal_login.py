@@ -303,11 +303,13 @@ def safe_update_user(json_path, username, updates, cipher):
 
 def check_password_complexity(pwd_str):
     missing = []
-    if len(pwd_str) < 6: missing.append("6 caracteres minimum")
-    if not any(c.isupper() for c in pwd_str): missing.append("une majuscule")
-    if not any(c.islower() for c in pwd_str): missing.append("une minuscule")
-    if not any(c.isdigit() for c in pwd_str): missing.append("un chiffre")
-    if not any(c in string.punctuation for c in pwd_str): missing.append("un symbole specifique (!@#$%^&*...)")
+
+    if len(pwd) < 12: missing.append("12 caractères minimum") #
+    if not any(c.isupper() for c in pwd): missing.append("une majuscule")
+    if not any(c.islower() for c in pwd): missing.append("une minuscule")
+    if not any(c.isdigit() for c in pwd): missing.append("un chiffre")
+    if not any(c in string.punctuation for c in pwd): missing.append("un symbole specifique (!@#$%^&*...)")
+
     return missing
 
 def start_internal_login():

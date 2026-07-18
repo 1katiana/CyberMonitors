@@ -1,0 +1,106 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="max-width: 600px; margin: 40px auto; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #30363d;">
+    <h2 style="color: #00e5ff; margin-top: 0; text-align: center; border-bottom: 1px solid #30363d; padding-bottom: 15px;">
+        ⚙️ Provisionnement IAM (SOC)
+    </h2>
+
+    <p style="color: #a8a8b3; font-size: 13px; text-align: center; margin-bottom: 25px;">
+        Création d'identité conforme à la politique de sécurité. L'identifiant normalisé et le mot de passe (généré aléatoirement - 12 chars min.) seront envoyés directement par email au collaborateur.
+    </p>
+
+    <form method="POST" action="{{ url_for('create_account') }}">
+
+        <!-- Informations Personnelles -->
+        <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Prénom</label>
+                <input type="text" name="prenom" required placeholder="ex: Jean"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Nom</label>
+                <input type="text" name="nom" required placeholder="ex: Dupont"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Email professionnel</label>
+            <input type="email" name="email" required placeholder="j.dupont@entreprise.com"
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <!-- Nouveaux champs demandés par le script du binôme -->
+        <div style="margin-bottom: 15px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Téléphone</label>
+            <input type="text" name="phone" placeholder="ex: 0600000000"
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Entreprise</label>
+                <input type="text" name="entreprise" placeholder="CyberMonitors"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Secteur</label>
+                <input type="text" name="secteur" placeholder="IT Security"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Poste</label>
+            <input type="text" name="poste" placeholder="Administrateur Système"
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <!-- Rôle -->
+        <div style="margin-bottom: 20px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Niveau d'Accès (RBAC)</label>
+            <select name="new_role" id="roleSelect" required onchange="toggleAssetSelection()"
+                    style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+                <option value="user">Utilisateur Métier (Périmètre restreint)</option>
+                <option value="monitor">Analyste SOC (Acquittement alertes)</option>
+                {% if creator_role == 'admin' %}
+                <option value="admin">Administrateur Système (Root / C2)</option>
+                {% endif %}
+            </select>
+        </div>
+
+        <!-- Périmètre (Uniquement pour User) -->
+        <div id="assetSelectionContainer" style="margin-bottom: 25px; background: #0a0b10; padding: 15px; border: 1px solid #30363d; border-radius: 4px;">
+            <label style="color: #00e5ff; font-size: 14px; font-weight: bold; margin-bottom: 10px; display: block;">
+                Périmètre autorisé (Obligatoire pour les Utilisateurs)
+            </label>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                {% for machine in parc %}
+                <label style="color: #e0e0e0; font-size: 13px; display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" name="assets" value="{{ machine }}" style="accent-color: #00e5ff;">
+                    {{ machine }}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <button type="submit" style="width: 100%; padding: 12px; background: #0055ff; color: white; border: none; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.3s; box-shadow: 0 0 10px rgba(0, 85, 255, 0.4);" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+            CRÉER ET ENVOYER LES IDENTIFIANTS
+        </button>
+    </form>
+</div>
+
+<script>
+    function toggleAssetSelection() {
+        const role = document.getElementById("roleSelect").value;
+        const container = document.getElementById("assetSelectionContainer");
+        if (role === "user") {
+            container.style.display = "block";
+        } else {
+            container.style.display = "none";
+        }
+    }
+    toggleAssetSelection();
+</script>
+{% endblock %}
