@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="max-width: 400px; margin: 100px auto; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #30363d; text-align: center;">
+    <h2 style="color: #00e5ff; margin-top: 0;">Authentification MFA</h2>
+    <p style="color: #a8a8b3; font-size: 14px;">
+        Veuillez saisir le code à 6 chiffres généré par votre application d'authentification.
+    </p>
+
+    <form method="POST" action="/verify_mfa" style="margin-top: 25px;">
+        <input type="text" name="token" placeholder="000000" maxlength="6" required autofocus
+               style="width: 100%; padding: 12px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; text-align: center; font-size: 24px; letter-spacing: 10px; margin-bottom: 15px;">
+        <button type="submit" style="width: 100%; padding: 12px; background: #00e5ff; color: black; border: none; font-weight: bold; border-radius: 4px; cursor: pointer;">
+            SE CONNECTER
+        </button>
+    </form>
+</div>
+{% endblock %}

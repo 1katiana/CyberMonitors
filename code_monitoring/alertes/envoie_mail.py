@@ -7,7 +7,7 @@ import os
 
 def send_combined_alert(all_crises):
     config = load_config()
-    sender = "dricoarnaud6@gmail.com"
+    sender = "katianaaoudia23@gmail.com"
     password = os.environ.get("EMAIL_PASSWORD")
     recipients = config["alert_recipients"]
 
@@ -33,3 +33,23 @@ def send_combined_alert(all_crises):
             print(f" Email envoyé à : {', '.join(recipients)}")
     except Exception as e:
         print(f" Erreur SMTP: {e}")
+
+# --- NOUVELLE FONCTION POUR L'IAM (Création de compte) ---
+def send_email(destinataire, sujet, corps):
+    sender = "katianaaoudia23@gmail.com"
+    password = os.environ.get("EMAIL_PASSWORD")
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = destinataire
+    msg["Subject"] = sujet
+
+    msg.attach(MIMEText(corps, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, [destinataire], msg.as_string())
+            print(f" Email de provisioning envoyé à : {destinataire}")
+    except Exception as e:
+        print(f" Erreur SMTP (send_email): {e}")

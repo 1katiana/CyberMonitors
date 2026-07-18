@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="max-width: 400px; margin: 50px auto; background: #161b22; padding: 30px; border-radius: 8px; border: 1px solid #30363d; text-align: center;">
+    <h2 style="color: #00e5ff; margin-top: 0;">Configuration MFA</h2>
+    <p style="color: #a8a8b3; font-size: 14px;">
+        1. Installez Google Authenticator ou Microsoft Authenticator sur votre téléphone.<br>
+        2. Scannez le QR Code ci-dessous.
+    </p>
+
+    <!-- Affichage du QR code généré en Base64 -->
+    <div style="background: white; padding: 10px; display: inline-block; border-radius: 8px; margin: 15px 0;">
+        <img src="data:image/png;base64,{{ qr_code }}" alt="QR Code MFA" style="width: 200px; height: 200px;">
+    </div>
+
+    <p style="font-size: 12px; color: #888;">
+        Ou saisissez cette clé manuellement : <br><strong style="color: #fff; letter-spacing: 2px;">{{ secret }}</strong>
+    </p>
+
+    <form method="POST" action="/setup_mfa" style="margin-top: 20px;">
+        <input type="text" name="token" placeholder="Code à 6 chiffres" maxlength="6" required
+               style="width: 100%; padding: 12px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; text-align: center; font-size: 18px; letter-spacing: 5px; margin-bottom: 15px;">
+        <button type="submit" style="width: 100%; padding: 12px; background: #04d361; color: black; border: none; font-weight: bold; border-radius: 4px; cursor: pointer;">
+            VALIDER LA CONFIGURATION
+        </button>
+    </form>
+</div>
+{% endblock %}

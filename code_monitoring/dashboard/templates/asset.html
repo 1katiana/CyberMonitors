@@ -4,6 +4,99 @@
     <h1 style="font-size: 2.5rem; letter-spacing: 2px; color: #fff; text-transform: uppercase;">
         {{ asset.name }}
     </h1>
+
+    {% set st = asset.status %}
+    {% set st_color = {'running': '#04d361', 'isolated': '#f75a68', 'stopped': '#8b949e', 'unknown': '#e0a200'}[st] %}
+    {% set st_label = {'running': 'Connecté', 'isolated': 'Isolé du réseau', 'stopped': 'Éteint', 'unknown': 'Statut inconnu'}[st] %}
+
+    <div style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; margin-bottom: 15px;
+        background-color: {{ st_color }}26; border: 1px solid {{ st_color }};">
+        <span style="width: 10px; height: 10px; border-radius: 50%; background-color: {{ st_color }}; box-shadow: 0 0 6px {{ st_color }};"></span>
+        <span style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: {{ st_color }};">
+            {{ st_label }}
+        </span>
+    </div>
+
+    {% if session['role'] == 'admin' %}
+    <div class="admin-control-panel" style="background-color: #1a1518; border: 1px solid #f75a68; padding: 20px; border-radius: 6px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(247, 90, 104, 0.1);">
+        <h3 style="color: #f75a68; margin-top: 0; text-transform: uppercase; font-size: 14px; letter-spacing: 1px; display: flex; align-items: center; gap: 8px;">
+            ⚡ Centre de Commande & Contrôle (Réservé Admin)
+        </h3>
+        <p style="font-size: 13px; color: #a8a8b3; margin-bottom: 15px;">
+            En tant qu'administrateur du SOC, vous pouvez interagir directement avec le conteneur et l'état réseau de cet équipement informatique.
+        </p>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+
+            {# ---- ALLUMER : actif uniquement si la machine est éteinte ---- #}
+            <form action="/api/machine/action" method="POST" style="margin: 0;">
+                <input type="hidden" name="machine" value="{{ asset.name }}">
+                <input type="hidden" name="action" value="start">
+                <button type="submit" {% if st !='stopped' %}disabled{% endif %}
+                        style="background-color: #04d361; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
+                    {% if st != 'stopped' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
+                        {% if st == 'stopped' %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    Allumer
+                </button>
+            </form>
+
+            {# ---- REDÉMARRER : n'a de sens que si le conteneur tourne (running ou isolated) ---- #}
+            <form action="/api/machine/action" method="POST" style="margin: 0;">
+                <input type="hidden" name="machine" value="{{ asset.name }}">
+                <input type="hidden" name="action" value="restart">
+                <button type="submit" {% if st == 'stopped' or st == 'unknown' %}disabled{% endif %}
+                        style="background-color: #0055ff; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
+                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
+                        {% if not (st == 'stopped' or st =='unknown' ) %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    Redémarrer
+                </button>
+            </form>
+
+            {# ---- ÉTEINDRE : actif uniquement si la machine est allumée (running ou isolated) ---- #}
+            <form action="/api/machine/action" method="POST" style="margin: 0;">
+                <input type="hidden" name="machine" value="{{ asset.name }}">
+                <input type="hidden" name="action" value="stop">
+                <button type="submit" {% if st == 'stopped' or st == 'unknown' %}disabled{% endif %}
+                        style="background-color: #e0a200; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
+                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
+                        {% if not (st == 'stopped' or st == 'unknown' ) %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    Éteindre
+                </button>
+            </form>
+
+            {# ---- ISOLER : actif uniquement si la machine tourne ET est connectée (running) ---- #}
+            <form action="/api/machine/action" method="POST" style="margin: 0; margin-left: auto;">
+                <input type="hidden" name="machine" value="{{ asset.name }}">
+                <input type="hidden" name="action" value="isolate">
+                <button type="submit" {% if st !='running' %}disabled{% endif %}
+                        style="background-color: #f75a68; color: white; border: 1px solid #f75a68; padding: 8px 20px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s; text-transform: uppercase; box-shadow: 0 0 10px rgba(247, 90, 104, 0.3);
+                    {% if st != 'running' %}opacity: 0.35; cursor: not-allowed; box-shadow: none;{% endif %}"
+                        {% if st == 'running' %}
+                        onmouseover="this.style.backgroundColor='transparent'; this.style.color='#f75a68';"
+                        onmouseout="this.style.backgroundColor='#f75a68'; this.style.color='white';"
+                        {% endif %}>
+                    ISOLER DU RÉSEAU
+                </button>
+            </form>
+
+            {# ---- RECONNECTER : actif uniquement si la machine est isolée ---- #}
+            <form action="/api/machine/action" method="POST" style="margin: 0;">
+                <input type="hidden" name="machine" value="{{ asset.name }}">
+                <input type="hidden" name="action" value="reconnect">
+                <button type="submit" {% if st !='isolated' %}disabled{% endif %}
+                        style="background-color: transparent; color: #04d361; border: 1px solid #04d361; padding: 8px 20px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s; text-transform: uppercase;
+                    {% if st != 'isolated' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
+                        {% if st == 'isolated' %}
+                        onmouseover="this.style.backgroundColor='#04d361'; this.style.color='white';"
+                        onmouseout="this.style.backgroundColor='transparent'; this.style.color='#04d361';"
+                        {% endif %}>
+                    Reconnecter
+                </button>
+            </form>
+
+        </div>
+    </div>
+    {% endif %}
     <div style="height: 2px; width: 100px; background: #00e5ff; margin: 10px auto;"></div>
 </div>
 
