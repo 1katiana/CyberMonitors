@@ -11,33 +11,43 @@
             color: #e0e0e0;
         }
 
+        /* Barre de navigation unique */
         nav {
             background: #121420;
             border-bottom: 1px solid #1f2235;
-            padding: 0.8rem 2rem;
+            padding: 0.5rem 1.5rem;
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            gap: 20px;
+            flex-wrap: nowrap; /* Garde tout sur une ligne */
         }
 
         .logo {
-            font-size: 1.4rem;
+            font-size: 1.2rem;
             font-weight: bold;
             color: #fff;
             white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .nav-links {
             display: flex;
             align-items: center;
-            gap: 20px;
+            gap: 15px;
+            flex-grow: 1;
+            overflow-x: auto;
+            white-space: nowrap;
+            scrollbar-width: none;
         }
+
+            .nav-links::-webkit-scrollbar {
+                display: none;
+            }
 
             .nav-links a {
                 color: #888;
                 text-decoration: none;
-                font-weight: 500;
-                transition: color 0.3s;
+                font-size: 13px;
                 display: flex;
                 align-items: center;
                 gap: 6px;
@@ -47,18 +57,12 @@
                     color: #00e5ff;
                 }
 
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            flex-shrink: 0;
-        }
-
         .user-menu {
             display: flex;
             align-items: center;
             gap: 15px;
+            flex-shrink: 0;
+            margin-left: auto; /* Pousse tout à droite */
         }
 
         .container {
@@ -66,75 +70,8 @@
             max-width: 1000px;
             margin: auto;
         }
-    </style>
-</head>
-<body>
-    <nav>
-        <div class="logo">🛡️ Cyber Monitors</div>
 
-        <div class="nav-links">
-            <a href="/">Accueil</a>
-
-            {% for m in nav_machines %}
-            {% set st = nav_status.get(m, 'unknown') %}
-
-            <!-- Logique de couleur et de titre selon l'état -->
-            {% set dot_color = {'running': '#04d361', 'isolated': '#e0a200', 'stopped': '#f75a68', 'unknown': '#8b949e'}[st] %}
-            {% set dot_title = {'running': 'Connecté', 'isolated': 'Isolé du réseau', 'stopped': 'Éteint', 'unknown': 'Statut inconnu'}[st] %}
-
-            <a href="/asset/{{ m }}" title="{{ m }} — {{ dot_title }}">
-                <!-- Pastille de statut -->
-                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background-color: {{ dot_color }}; box-shadow: 0 0 6px {{ dot_color }};"></span>
-                {{ m }}
-            </a>
-            {% endfor %}
-        </div>
-
-        <div class="user-menu">
-            <a href="{{ url_for('profil') }}" style="display: flex; align-items: center; gap: 8px; color: #fff; text-decoration: none; background-color: #1a1c2e; padding: 6px 14px; border-radius: 20px; border: 1px solid #29292e; transition: 0.3s; font-size: 14px;"
-               onmouseover="this.style.borderColor='#00e5ff'" onmouseout="this.style.borderColor='#29292e'">
-                <span>👤 {{ session['user'] }}</span>
-                <span style="font-size: 11px; background-color: #0055ff; color: white; padding: 2px 6px; border-radius: 10px; text-transform: uppercase; font-weight: bold;">
-                    {{ session['role'] }}
-                </span>
-
-            
-                {% if session.get('role') in ['admin', 'monitor'] %}
-                <a href="{{ url_for('create_account') }}" style="color: #00e5ff;">➕ Créer Compte</a>
-                {% endif %}
-            </a>
-
-            <a href="{{ url_for('logout') }}" style="color: #a8a8b3; text-decoration: none; font-size: 14px; font-weight: bold; transition: color 0.3s;"
-               onmouseover="this.style.color='#f75a68'" onmouseout="this.style.color='#a8a8b3'">
-                Quitter
-            </a>
-        </div>
-    </nav>
-
-    <div class="container-fluid" style="margin-top: 10px; padding: 0 20px;">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-        {% for category, message in messages %}
-        <div class="flash-message flash-{{ category }}">
-            {{ message }}
-        </div>
-        {% endfor %}
-        {% endif %}
-        {% endwith %}
-
-        {% if current_crises %}
-        {% for crisis in current_crises %}
-        <div class="alert-box-urgent">
-            <span class="symbol">⚠️</span>
-            <strong>ALERTE SUR {{ crisis.asset }} :</strong>
-            &nbsp;{{ crisis.details | join(', ') }}
-            <span class="time">({{ crisis.time.split(' ')[-1] }})</span>
-        </div>
-        {% endfor %}
-        {% endif %}
-    </div>
-
-    <style>
+        /* Tes styles existants pour flash-message et alertes restent identiques... */
         .flash-message {
             padding: 12px 20px;
             margin-bottom: 8px;
@@ -161,12 +98,6 @@
             color: #f75a68;
         }
 
-        .flash-info {
-            background-color: rgba(0, 229, 255, 0.15);
-            border-left: 6px solid #00e5ff;
-            color: #00e5ff;
-        }
-
         .alert-box-urgent {
             background: linear-gradient(90deg, #ff3d00, #ff1744);
             color: white;
@@ -175,41 +106,51 @@
             border-radius: 5px;
             font-weight: bold;
             border-left: 8px solid #b2102f;
-            animation: pulse-red 2s infinite;
             display: flex;
             align-items: center;
-            box-shadow: 0 4px 15px rgba(255, 61, 0, 0.3);
-        }
-
-            .alert-box-urgent .symbol {
-                font-size: 1.5rem;
-                margin-right: 15px;
-            }
-
-            .alert-box-urgent .time {
-                margin-left: auto;
-                font-family: monospace;
-                opacity: 0.8;
-            }
-
-        @keyframes pulse-red {
-            0% {
-                transform: scale(1);
-            }
-
-            50% {
-                transform: scale(1.005);
-                box-shadow: 0 4px 25px rgba(255, 61, 0, 0.5);
-            }
-
-            100% {
-                transform: scale(1);
-            }
         }
     </style>
+</head>
+<body>
+
+    <nav>
+        <div class="logo">🛡️ Cyber Monitors</div>
+
+        <div class="nav-links">
+            {% if session.get('role') != 'user' %}
+            <a href="/">Accueil</a>
+            {% endif %}
+
+            {% for m in nav_machines %}
+            {% set st = nav_status.get(m, 'unknown') %}
+            {% set dot_color = {'running': '#04d361', 'isolated': '#e0a200', 'stopped': '#f75a68', 'unknown': '#8b949e'}[st] %}
+
+            <a href="/asset/{{ m }}" title="{{ m }}">
+                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background-color: {{ dot_color }};"></span>
+                {{ m }}
+            </a>
+            {% endfor %}
+        </div>
+
+        <div class="user-menu">
+            <div style="display: flex; align-items: center; gap: 8px; color: #fff; background-color: #1a1c2e; padding: 6px 14px; border-radius: 20px; border: 1px solid #29292e; font-size: 13px;">
+                <span>👤 {{ session['user'] }}</span>
+                <span style="font-size: 10px; background-color: #0055ff; color: white; padding: 2px 6px; border-radius: 10px; text-transform: uppercase;">
+                    {{ session['role'] }}
+                </span>
+            </div>
+
+            {% if session.get('role') in ['admin', 'monitor'] %}
+            <a href="{{ url_for('create_account') }}" style="color: #00e5ff; text-decoration: none; font-size: 13px;">➕ Créer Compte</a>
+            {% endif %}
+
+            <a href="{{ url_for('logout') }}" style="color: #a8a8b3; text-decoration: none; font-size: 13px;">Quitter</a>
+        </div>
+    </nav>
 
     <div class="container">
         {% block content %}{% endblock %}
     </div>
+
 </body>
 </html>

@@ -1,5 +1,5 @@
 {
     "interval_type": "hours",
-    "interval_value": 5,
+    "interval_value": 24,
     "retention_count": 6
 }

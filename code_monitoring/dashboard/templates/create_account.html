@@ -31,6 +31,32 @@
                    style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
         </div>
 
+        <!-- Nouveaux champs demandés par le script du binôme -->
+        <div style="margin-bottom: 15px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Téléphone</label>
+            <input type="text" name="phone" placeholder="ex: 0600000000"
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
+        <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Entreprise</label>
+                <input type="text" name="entreprise" placeholder="CyberMonitors"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Secteur</label>
+                <input type="text" name="secteur" placeholder="IT Security"
+                       style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+            </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Poste</label>
+            <input type="text" name="poste" placeholder="Administrateur Système"
+                   style="width: 100%; padding: 10px; background: #0a0b10; border: 1px solid #30363d; color: white; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
         <!-- Rôle -->
         <div style="margin-bottom: 20px;">
             <label style="color: #8b949e; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block;">Niveau d'Accès (RBAC)</label>
@@ -66,7 +92,6 @@
 </div>
 
 <script>
-    // JS pour cacher/afficher la sélection des machines selon le rôle
     function toggleAssetSelection() {
         const role = document.getElementById("roleSelect").value;
         const container = document.getElementById("assetSelectionContainer");
@@ -76,7 +101,6 @@
             container.style.display = "none";
         }
     }
-    // Exécuter au chargement pour s'assurer du bon état initial
     toggleAssetSelection();
 </script>
 {% endblock %}
