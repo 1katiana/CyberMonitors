@@ -1,8 +1,8 @@
+import os
+import sys
 import builtins
 import getpass
-import sys
 import time
-import os
 import subprocess
 import threading
 import queue
@@ -27,6 +27,44 @@ from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
+try:
+    import msvcrt
+except ImportError:
+    pass
+
+try:
+    import select
+    import termios
+except ImportError:
+    pass
+
+# AUTO-HEALING ET VERROU D'INITIALISATION
+
+_IN_DOCKER = os.getenv("IS_MASTER_CONSOLE") == "1"
+_DATA_DIR = "/infrastructure/Data" if _IN_DOCKER else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Data"))
+_INIT_FLAG = os.path.join(_DATA_DIR, ".initialized")
+_ENV_PATH = "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env" if _IN_DOCKER else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+_is_valid = False
+if os.path.exists(_ENV_PATH):
+    with open(_ENV_PATH, 'r') as f:
+        for line in f:
+            if line.startswith("FERNET_SECRET_KEY=") and len(line.strip()) > 20:
+                _is_valid = True
+                break
+
+if not os.path.exists(_INIT_FLAG) or not _is_valid:
+    if os.path.exists(_INIT_FLAG): os.remove(_INIT_FLAG) # Purge des fichiers corrompus
+    try:
+        import init
+        init.main()
+        os.execv(sys.executable, ['python3', __file__] + sys.argv[1:])
+    except EOFError:
+        sys.exit(1)
+    except Exception as e:
+        print(f"\033[91mErreur d'initialisation : {e}\033[0m")
+        sys.exit(1)
+        
 # *** PROTECTION GLOBALE : CRASH CTRL+D ET TIMEOUT D'INACTIVITE ***
 def input_with_timeout(prompt="", timeout=300, is_password=False):
     sys.stdout.write(prompt)
@@ -35,21 +73,20 @@ def input_with_timeout(prompt="", timeout=300, is_password=False):
     input_str = ""
     
     if os.name == 'nt':
-        import msvcrt
         while True:
             if msvcrt.kbhit():
-                start_time = time.time() # Reinitialise le chrono a chaque frappe
+                start_time = time.time()
                 c = msvcrt.getch()
                 if c == b'\r' or c == b'\n':
                     print()
                     return input_str
-                elif c == b'\x08': # Backspace
+                elif c == b'\x08':
                     if len(input_str) > 0:
                         input_str = input_str[:-1]
                         if not is_password:
                             sys.stdout.write('\b \b')
                             sys.stdout.flush()
-                elif c == b'\x03' or c == b'\x04': # Ctrl+C / Ctrl+D
+                elif c == b'\x03' or c == b'\x04':
                     print()
                     return ""
                 else:
@@ -66,9 +103,6 @@ def input_with_timeout(prompt="", timeout=300, is_password=False):
                 sys.exit(0)
             time.sleep(0.05)
     else:
-        import select
-        import termios
-        
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         if is_password:
@@ -109,11 +143,9 @@ SEUIL_CRITIQUE = 10
 SEUIL_AVERTISSEMENT = 3   
 
 # *** DETECTION DOCKER ***
-IN_DOCKER = os.getenv("IS_MASTER_CONSOLE") == "1"
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-if IN_DOCKER:
+if _IN_DOCKER:
     ROOT_BACKUP_DIR  = "/infrastructure"
     log_dir          = "/infrastructure/Data/Logs"
     BACKUP_PREFS_DIR = "/infrastructure/code_monitoring/gestion de sauvegarde"
@@ -176,10 +208,6 @@ def display_lockout_screen(lock_until):
 load_dotenv(dotenv_path=env_path)
 env_key = os.getenv("FERNET_SECRET_KEY")
 
-if not env_key:
-    print(f"{C_DANGER}Erreur fatale : Clef FERNET_SECRET_KEY introuvable dans le fichier .env !{C_END}")
-    sys.exit(1)
-
 try:
     SECRET_KEY = env_key.encode('utf-8')
     cipher = Fernet(SECRET_KEY)
@@ -210,7 +238,6 @@ def calculate_hmac(file_path):
 
 # *** ARCHITECTURE SHADOW BACKUP ***
 def atomic_update_database(json_path, data):
-    """Met a jour le JSON, le HMAC et le Shadow Backup en une seule operation."""
     with open(json_path, 'w') as f:
         json.dump(data, f, indent=4)
     
@@ -227,7 +254,6 @@ def atomic_update_database(json_path, data):
         logging.error(f"[SHADOW BACKUP] Erreur d'ecriture : {e}")
 
 def restore_from_backup(json_path):
-    """Restaure depuis le Shadow Backup en priorite, sinon depuis le ZIP."""
     if os.path.exists(SHADOW_BACKUP):
         try:
             with open(SHADOW_BACKUP, "rb") as f:
@@ -264,8 +290,6 @@ def restore_from_backup(json_path):
             if new_hmac:
                 with open(HMAC_SIGN_FILE, 'w') as f:
                     f.write(new_hmac)
-            
-            # Reconstruction automatique du Shadow Backup apres restauration ZIP
             try:
                 with open(json_path, 'r') as f:
                     data = json.load(f)
@@ -386,14 +410,17 @@ def is_container_running(name):
     return stat == "true"
 
 def get_machines():
-    out, code = run('docker ps -a --format "{{.Names}}|{{.Status}}"')
+    out, code = run('docker ps -a --format "{{.Names}}|{{.Status}}|{{.Networks}}"')
     machines = []
     if out and code == 0:
         for line in out.split('\n'):
-            if '|' in line:
-                name, status = line.split('|', 1)
+            parts = line.split('|')
+            if len(parts) >= 2:
+                name = parts[0]
+                status = parts[1]
+                networks = parts[2] if len(parts) > 2 else ""
                 if any(x in name.lower() for x in ['srv', 'wkst', 'center']):
-                    machines.append({"name": name, "status": status})
+                    machines.append({"name": name, "status": status, "networks": networks})
     return machines
 
 def check_password_complexity(pwd):
@@ -495,7 +522,7 @@ def manage_own_profile(current_user):
             else:
                 if c_code == 'liste':
                     for k, v in COUNTRIES.items(): 
-                        print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                        print(f"   * {k.upper()} : {v['name']} ({v['code']})")
                     input("Appuyez sur Entree...")
                     continue
                 if c_code not in COUNTRIES:
@@ -1025,7 +1052,7 @@ def open_backup_menu(current_admin):
 
         unite_aff = "jours" if config['interval_type'] == "days" else "heures"
 
-        print(f"{C_BASE}--- MENU ---{C_END}")
+        print(f"{C_BASE}*** MENU ***{C_END}")
         print(f"1. {C_OK}Lancer un Full Backup manuel{C_END}")
         print(f"2. {C_DANGER}Restaurer une sauvegarde (Rollback System){C_END}")
         print(f"3. {C_BASE}Inspecter le contenu d'une archive (RAM){C_END}")
@@ -1377,7 +1404,7 @@ def manage_users(current_admin):
                     
                     if c_code == 'liste':
                         for k, v in COUNTRIES.items(): 
-                            print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                            print(f"   * {k.upper()} : {v['name']} ({v['code']})")
                         continue
                         
                     if c_code not in COUNTRIES:
@@ -1540,7 +1567,7 @@ def manage_users(current_admin):
                         if del_user in fresh_users:
                             del fresh_users[del_user]
                             atomic_update_database(USER_DATA_PATH, fresh_users)
-                            print(f"{C_OK}[-] Utilisateur '{del_user}' supprime.{C_END}")
+                            print(f"{C_OK}[*] Utilisateur '{del_user}' supprime.{C_END}")
                             logging.warning(f"Suppression du compte {del_user} par {current_admin}")
                         else:
                             print(f"{C_WARN}Deja supprime par un autre processus.{C_END}")
@@ -1625,7 +1652,7 @@ def manage_users(current_admin):
                         else:
                             if c_code == 'liste':
                                 for k, v in COUNTRIES.items(): 
-                                    print(f"   - {k.upper()} : {v['name']} ({v['code']})")
+                                    print(f"   * {k.upper()} : {v['name']} ({v['code']})")
                                 input("Appuyez sur Entree...")
                                 continue
                             if c_code not in COUNTRIES:
@@ -1759,6 +1786,7 @@ def menu_actions(targets, current_user, current_role):
             print(f"2. {C_DANGER}Hard Crash (Stop){C_END}")
             print(f"3. {C_OK}Power On (Start){C_END}")
             print(f"4. {C_BASE}Logiciels et Attaques{C_END}")
+            print(f"5. \033[95mQuarantaine (Isoler / Reconnecter){C_END}")
             
         print("0. Retour")
         
@@ -1769,7 +1797,16 @@ def menu_actions(targets, current_user, current_role):
             if is_container_running(m):
                 logging.info(f"[{current_user}] Ouverture d'une session SSH vers {m}")
                 os.system('clear')
-                os.system(f"docker exec -it {m} python3 /scripts/internal_login.py")
+                
+                # PATCH : Injection de la clef Fernet via subprocess
+                env_key = os.getenv("FERNET_SECRET_KEY", "")
+                cmd_ssh = [
+                    "docker", "exec", "-it", 
+                    "-e", f"FERNET_SECRET_KEY={env_key}", 
+                    m, "python3", "/scripts/internal_login.py"
+                ]
+                subprocess.run(cmd_ssh)
+                
                 logging.info(f"[{current_user}] Fermeture de la session SSH vers {m}")
             else:
                 print(f"{C_WARN}[!] Machine eteinte.{C_END}")
@@ -1853,6 +1890,54 @@ def menu_actions(targets, current_user, current_role):
                 time.sleep(2)
             break
             
+        elif c == '5':
+            if current_role != "admin": 
+                continue
+            clear_screen()
+            print(f"\033[95m*** GESTION DE LA QUARANTAINE ***{C_END}\n")
+            
+            # On recupere dynamiquement le VRAI nom du reseau via le dashboard
+            net_ref, _ = run("docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' monitor_dashboard")
+            real_network = net_ref.strip()
+
+            if not real_network:
+                print(f"{C_DANGER}[!] Impossible de determiner le nom du reseau parent.{C_END}")
+                time.sleep(2)
+                break
+
+            for m in targets:
+                if not is_container_running(m):
+                    print(f"{C_WARN}[*] {m} est eteint, impossible de modifier son reseau.{C_END}")
+                    continue
+                
+                # Verifier quel reseau est actuellement attache a la cible
+                net_stat, _ = run(f"docker inspect -f '{{{{range $k, $v := .NetworkSettings.Networks}}}}{{{{$k}}}}{{{{end}}}}' {m}")
+                net_stat = net_stat.strip()
+                
+                if not net_stat:
+                    # LEVER LA QUARANTAINE
+                    print(f"{C_OK}[*] Reconnexion de {m} au reseau {real_network}...{C_END}")
+                    run(f"docker network connect {real_network} {m}")
+                    print(f"{C_OK}[*] Degel de l'agent sur {m}...{C_END}")
+                    run(f"docker exec {m} pkill -CONT -f simu_agent.py")
+                    logging.warning(f"[{current_user}] a LEVE la quarantaine sur {m}")
+                    print(f"{C_OK}[+] {m} est de nouveau operationnel.{C_END}\n")
+                else:
+                    # METTRE EN QUARANTAINE
+                    print(f"{C_DANGER}[*] Isolation reseau de {m} en cours (Deconnexion de {net_stat})...{C_END}")
+                    res_out, res_code = run(f"docker network disconnect {net_stat} {m}")
+                    
+                    if res_code != 0:
+                        print(f"{C_DANGER}[!] Erreur lors de la deconnexion : {res_out}{C_END}")
+                        
+                    print(f"{C_DANGER}[*] Gel de l'agent sur {m}...{C_END}")
+                    run(f"docker exec {m} pkill -STOP -f simu_agent.py")
+                    logging.critical(f"[{current_user}] a mis en QUARANTAINE {m}")
+                    print(f"{C_DANGER}[+] {m} est maintenant isole (Forensics OK).{C_END}\n")
+                    
+            time.sleep(3)
+            break
+            
         elif c == '0' or c == '': 
             break
 
@@ -1883,8 +1968,17 @@ def main():
             print(f"{C_BASE}=========================================={C_END}\n")
             
             for i, m in enumerate(m_list):
-                col = C_OK if "Up" in m['status'] else C_DANGER
-                print(f"{i+1}. {m['name']} {col}[{m['status']}]{C_END}")
+                if "Up" in m['status']:
+                    if not m.get('networks', '').strip():
+                        col = '\033[95m'
+                        status_text = "EN QUARANTAINE"
+                    else:
+                        col = C_OK
+                        status_text = m['status']
+                else:
+                    col = C_DANGER
+                    status_text = m['status']
+                print(f"{i+1}. {m['name']} {col}[{status_text}]{C_END}")
             
             if current_role == "admin":
                 print(f"\n{C_BASE}Commandes : Numeros (ex: 1,2), 'toutes', 'L' (Logs), 'U' (Utilisateurs), 'B' (Backups), 'P' (Mon Profil), 'D' (Deconnexion), 'Q' (Quitter){C_END}")
@@ -1969,7 +2063,6 @@ def main():
                     sys.stdout.flush()
 
                 if os.name == 'nt':
-                    import msvcrt
                     try:
                         while True:
                             if msvcrt.kbhit() and msvcrt.getch().lower() == b'q': 
@@ -1980,7 +2073,6 @@ def main():
                     except KeyboardInterrupt: 
                         pass
                 else:
-                    import select
                     try:
                         while True:
                             while not q.empty(): 

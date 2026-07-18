@@ -103,11 +103,27 @@ C_END = '\033[0m'
 # *** CHIFFREMENT & INTEGRITE (ANTI-TOCTOU ET ANTI-FALSIFICATION) ***
 def get_cipher():
     env_key = os.getenv("FERNET_SECRET_KEY")
+    
+    # Fallback : Si l'environnement est vide (exec manuel), on force la lecture depuis le Dashboard via le socket Docker
+    if not env_key:
+        try:
+            out = subprocess.check_output(
+                ["docker", "exec", "monitor_dashboard", "cat", "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env"], 
+                stderr=subprocess.DEVNULL
+            ).decode('utf-8')
+            for line in out.splitlines():
+                if line.strip().startswith('FERNET_SECRET_KEY='):
+                    env_key = line.split('=', 1)[1].strip()
+                    break
+        except Exception:
+            pass
+
     if not env_key:
         print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef FERNET_SECRET_KEY introuvable !{C_END}")
         log_security_event("SYSTEM", "MISSING_ENV_KEY", "CRITICAL", "Fichier .env ou clef de chiffrement absente")
         time.sleep(4)
         sys.exit(1)
+        
     try: 
         return Fernet(env_key.encode('utf-8'))
     except Exception as e:
@@ -120,7 +136,21 @@ def decrypt_val(val, cipher):
     except: return "[Erreur Dechiffrement]"
 
 def calculate_hmac(file_path):
+    # On reutilise la logique de fallback pour s'assurer que le HMAC fonctionne toujours
     env_key = os.getenv("FERNET_SECRET_KEY")
+    if not env_key:
+        try:
+            out = subprocess.check_output(
+                ["docker", "exec", "monitor_dashboard", "cat", "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env"], 
+                stderr=subprocess.DEVNULL
+            ).decode('utf-8')
+            for line in out.splitlines():
+                if line.strip().startswith('FERNET_SECRET_KEY='):
+                    env_key = line.split('=', 1)[1].strip()
+                    break
+        except Exception:
+            pass
+            
     if not env_key: return None
     try:
         with open(file_path, 'rb') as f:

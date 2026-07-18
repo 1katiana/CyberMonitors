@@ -1,5 +1,5 @@
 services:
-  # --- COLLECTEUR (Le coeur qui remplit la base) ---
+  # --- COLLECTEUR ---
   cyber-monitor-collector:
     build:
       context: .
@@ -12,10 +12,11 @@ services:
       - monitoring-net
     environment:
       - PYTHONUNBUFFERED=1 
-    command: python /app/code_monitoring/sonde/collecteur.py
+    # VERROU : Attend l'initialisation
+    command: sh -c "while [ ! -f /app/data/.initialized ]; do sleep 3; done; exec python /app/code_monitoring/sonde/collecteur.py"
     restart: always
 
-  # --- DASHBOARD (L'interface visuelle) ---
+  # --- DASHBOARD ---
   cyber-dashboard:
     build:
       context: . 
@@ -25,20 +26,29 @@ services:
     volumes:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
-      - ../..:/infrastructure # Donne accès à tout le projet pour le backup
+      - ../..:/infrastructure
       - /var/run/docker.sock:/var/run/docker.sock
-  
     networks:
       - monitoring-net
     env_file:
       - .env
     environment:
-      - IS_MASTER_CONSOLE=1 # Active le piège du shell vers la console
+      - IS_MASTER_CONSOLE=1
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/code_monitoring 
-      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
-      - FLASK_SECRET_KEY=${FLASK_SECRET}
-    command: python /app/code_monitoring/dashboard/app.py 
+    # VERROU ACTIF : Le dashboard agit comme un chien de garde et abat les conteneurs demarres manuellement
+    command: >
+      sh -c "
+      if [ ! -f /app/data/.initialized ]; then
+        echo '[SYSTEM] Premier demarrage. Verrouillage actif...';
+        while [ ! -f /app/data/.initialized ]; do
+          docker stop monitor_collector linux-srv-1 linux-srv-2 win-wkst-1 win-wkst-2 win-srv-indispensable > /dev/null 2>&1 || true;
+          sleep 2;
+        done;
+      fi;
+      echo '[SYSTEM] Lancement du Dashboard...';
+      exec python /app/code_monitoring/dashboard/app.py
+      "
     depends_on:
       - cyber-monitor-collector
     restart: always
@@ -58,7 +68,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
-    command: python /scripts/simu_agent.py
+    # VERROU : Attend l'initialisation
+    command: sh -c "while [ ! -f /app/Data/.initialized ]; do sleep 3; done; exec python /scripts/simu_agent.py"
+    restart: always
 
   linux-srv-2:
     build: .
@@ -74,7 +86,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
-    command: python /scripts/simu_agent.py
+    command: sh -c "while [ ! -f /app/Data/.initialized ]; do sleep 3; done; exec python /scripts/simu_agent.py"
+    restart: always
 
   # --- PARC SIMULÉ : POSTES WINDOWS ---
   win-wkst-1:
@@ -94,7 +107,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
-    command: python /scripts/simu_agent.py
+    command: sh -c "while [ ! -f /app/Data/.initialized ]; do sleep 3; done; exec python /scripts/simu_agent.py"
+    restart: always
 
   win-wkst-2:
     build: 
@@ -113,7 +127,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
-    command: python /scripts/simu_agent.py
+    command: sh -c "while [ ! -f /app/Data/.initialized ]; do sleep 3; done; exec python /scripts/simu_agent.py"
+    restart: always
 
   # --- SERVEUR WINDOWS CRITIQUE ---
   win-srv-indispensable:
@@ -133,8 +148,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - monitoring-net
-    command: python /scripts/simu_agent.py
-    
+    command: sh -c "while [ ! -f /app/Data/.initialized ]; do sleep 3; done; exec python /scripts/simu_agent.py"
+    restart: always
 
 networks:
   monitoring-net:
