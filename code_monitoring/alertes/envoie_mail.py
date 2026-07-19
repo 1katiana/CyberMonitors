@@ -7,7 +7,7 @@ import os
 
 def send_combined_alert(all_crises):
     config = load_config()
-    sender = "katianaaoudia23@gmail.com"
+    sender = os.environ.get("EMAIL_USER")
     password = os.environ.get("EMAIL_PASSWORD")
     recipients = config["alert_recipients"]
 

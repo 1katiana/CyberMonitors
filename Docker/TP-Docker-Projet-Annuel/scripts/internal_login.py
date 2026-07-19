@@ -18,9 +18,11 @@ import hashlib
 import zipfile
 import io
 import glob
+import smtplib
+from email.mime.text import MIMEText
+import secrets
 from cryptography.fernet import Fernet
 
-# *** PROTECTION GLOBALE CONTRE LE CRASH CTRL+D (EOFError) ***
 _orig_input = builtins.input
 def safe_input(prompt=""):
     try:
@@ -39,11 +41,9 @@ def safe_getpass(prompt=""):
         return ""
 getpass.getpass = safe_getpass
 
-# *** PARAMETRES DE SECURITE ***
 SEUIL_CRITIQUE = 10       
 SEUIL_AVERTISSEMENT = 3   
 
-# *** GESTION DES LOGS ET DE LA BASE DE DONNEES ***
 MACHINE_NAME = os.environ.get("MACHINE_NAME", "UNKNOWN_MACHINE")
 LOG_DIR = "/app/Data/Logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -78,7 +78,6 @@ def log_security_event(username, event_type, severity, details):
     except Exception as e:
         logging.error(f"Erreur d'insertion SQL : {e}")
 
-# *** PERSISTANCE DU VERROUILLAGE CONSOLE ***
 def get_console_lock():
     if os.path.exists(CONSOLE_LOCK_FILE):
         try:
@@ -93,18 +92,14 @@ def set_console_lock(lock_until):
             f.write(str(lock_until))
     except: pass
 
-# *** DESIGN ***
 C_OK = '\033[92m'
 C_DANGER = '\033[91m'
 C_WARN = '\033[93m'
 C_BASE = '\033[96m'
 C_END = '\033[0m'
 
-# *** CHIFFREMENT & INTEGRITE (ANTI-TOCTOU ET ANTI-FALSIFICATION) ***
 def get_cipher():
     env_key = os.getenv("FERNET_SECRET_KEY")
-    
-    # Fallback : Si l'environnement est vide (exec manuel), on force la lecture depuis le Dashboard via le socket Docker
     if not env_key:
         try:
             out = subprocess.check_output(
@@ -136,7 +131,6 @@ def decrypt_val(val, cipher):
     except: return "[Erreur Dechiffrement]"
 
 def calculate_hmac(file_path):
-    # On reutilise la logique de fallback pour s'assurer que le HMAC fonctionne toujours
     env_key = os.getenv("FERNET_SECRET_KEY")
     if not env_key:
         try:
@@ -158,9 +152,7 @@ def calculate_hmac(file_path):
         return hmac.new(env_key.encode('utf-8'), data, hashlib.sha256).hexdigest()
     except: return None
 
-# *** ARCHITECTURE SHADOW BACKUP ***
 def atomic_update_database(json_path, data, cipher):
-    """Met a jour le JSON, le HMAC et le Shadow Backup en une seule operation."""
     with open(json_path, 'w') as f:
         json.dump(data, f, indent=4)
     
@@ -178,7 +170,6 @@ def atomic_update_database(json_path, data, cipher):
         logging.error(f"[SHADOW BACKUP] Erreur d'ecriture : {e}")
 
 def restore_from_backup(json_path, cipher):
-    """Restaure depuis le Shadow Backup en priorite, sinon depuis le ZIP."""
     if os.path.exists(SHADOW_BACKUP):
         try:
             with open(SHADOW_BACKUP, "rb") as f:
@@ -215,8 +206,6 @@ def restore_from_backup(json_path, cipher):
             if new_hmac:
                 with open(HMAC_SIGN_FILE, 'w') as f:
                     f.write(new_hmac)
-            
-            # Reconstruction automatique du Shadow Backup apres restauration ZIP
             try:
                 with open(json_path, 'r') as f:
                     data = json.load(f)
@@ -303,13 +292,11 @@ def safe_update_user(json_path, username, updates, cipher):
 
 def check_password_complexity(pwd_str):
     missing = []
-
-    if len(pwd) < 12: missing.append("12 caractères minimum") #
-    if not any(c.isupper() for c in pwd): missing.append("une majuscule")
-    if not any(c.islower() for c in pwd): missing.append("une minuscule")
-    if not any(c.isdigit() for c in pwd): missing.append("un chiffre")
-    if not any(c in string.punctuation for c in pwd): missing.append("un symbole specifique (!@#$%^&*...)")
-
+    if len(pwd_str) < 12: missing.append("12 caracteres minimum")
+    if not any(c.isupper() for c in pwd_str): missing.append("une majuscule")
+    if not any(c.islower() for c in pwd_str): missing.append("une minuscule")
+    if not any(c.isdigit() for c in pwd_str): missing.append("un chiffre")
+    if not any(c in string.punctuation for c in pwd_str): missing.append("un symbole specifique (!@#$%^&*...)")
     return missing
 
 def start_internal_login():
@@ -398,6 +385,15 @@ def start_internal_login():
             time.sleep(3)
             sys.exit(1)
 
+        role = user_data.get("role", "user")
+        assigned = user_data.get("assigned_assets", [])
+        
+        if role == "user" and MACHINE_NAME not in assigned:
+            log_security_event(user, "ACCESS_DENIED", "CRITICAL", f"Tentative d'acces hors perimetre sur {MACHINE_NAME}")
+            print(f"\n{C_DANGER}[!] ACCES REFUSE : Vous n'avez pas l'autorisation d'acceder a l'equipement {MACHINE_NAME}.{C_END}")
+            time.sleep(3)
+            sys.exit(1)
+
         failed_count = user_data.get("failed_attempts", 0)
 
         if failed_count > SEUIL_CRITIQUE:
@@ -469,7 +465,7 @@ def start_internal_login():
 
         if user_data.get("force_reset"):
             print(f"\n{C_WARN}[!] MISE A JOUR DE SECURITE REQUISE.{C_END}")
-            print(f"Vous devez obligatoirement modifier votre mot de passe.\n")
+            print(f"Vous devez obligatoirement modifier votre mot de passe pour continuer.\n")
             while True:
                 new_pwd = getpass.getpass("\nNouveau mot de passe : ").strip()
                 if not new_pwd:
@@ -509,13 +505,64 @@ def start_internal_login():
                 print(f"{C_DANGER}Erreur BDD lors de la sauvegarde : {e}{C_END}")
                 time.sleep(3)
                 sys.exit(1)
+                
+        user_email = decrypt_val(user_data.get("email"), cipher)
+        if user_email and user_email != "Non renseigne":
+            expected_code = str(secrets.randbelow(900000) + 100000)
+            msg = MIMEText(f"Bonjour,\n\nVotre code MFA a usage unique pour l'acces SSH a la machine {MACHINE_NAME} est : {expected_code}\n\nL'equipe SOC.")
+            msg['Subject'] = f'CyberMonitors - Code MFA pour {MACHINE_NAME}'
+            msg['From'] = os.getenv("EMAIL_USER")
+            msg['To'] = user_email
+            
+            try:
+                host = os.getenv("EMAIL_HOST")
+                port = int(os.getenv("EMAIL_PORT", 587))
+                pwd_app = os.getenv("EMAIL_PASSWORD")
+                mail_user = os.getenv("EMAIL_USER")
+
+                print(f"\n{C_BASE}[*] VERIFICATION MFA : Envoi du code a {user_email}...{C_END}")
+                log_security_event(user, "MFA_CHALLENGE_SENT", "INFO", "Envoi du code MFA par email post-authentification")
+
+                if port == 465:
+                    with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                        server.login(mail_user, pwd_app)
+                        server.sendmail(mail_user, [user_email], msg.as_string())
+                else:
+                    with smtplib.SMTP(host, port, timeout=10) as server:
+                        server.starttls()
+                        server.login(mail_user, pwd_app)
+                        server.sendmail(mail_user, [user_email], msg.as_string())
+            except Exception as e:
+                print(f"{C_DANGER}[!] Erreur d'envoi du code MFA SMTP : {e}{C_END}")
+                sys.exit(1)
+
+            attempts = 3
+            mfa_success = False
+            while attempts > 0:
+                code_in = input(f"{C_WARN}Code MFA recu par email : {C_END}").strip()
+                if code_in == expected_code:
+                    mfa_success = True
+                    break
+                attempts -= 1
+                if attempts > 0:
+                    print(f"{C_DANGER}Code invalide. Essais restants : {attempts}{C_END}")
+            
+            if not mfa_success:
+                log_security_event(user, "MFA_FAILED", "CRITICAL", "Echec lors de la validation du code MFA par mail")
+                print(f"{C_DANGER}Echec MFA. Connexion coupee.{C_END}")
+                sys.exit(1)
+            else:
+                log_security_event(user, "MFA_SUCCESS", "INFO", "Validation MFA reussie")
+        else:
+            print(f"{C_DANGER}[!] Adresse email non configuree. MFA impossible. Acces bloque.{C_END}")
+            sys.exit(1)
+
         break 
 
     log_security_event(user, "LOGIN_SUCCESS", "INFO", "Ouverture de session SSH accordee")
-    print(f"{C_OK}[+] Authentification reussie.{C_END}")
+    print(f"{C_OK}[+] Authentification double facteur reussie.{C_END}")
     time.sleep(1)
     
-    role = accounts[user].get("role", "user")
     os_type = os.environ.get('OS_TYPE', 'Linux')
     shell_path = "/bin/bash.real" 
     

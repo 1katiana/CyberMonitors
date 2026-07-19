@@ -23,6 +23,8 @@ import stat
 import hmac
 import hashlib
 import random
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -38,8 +40,6 @@ try:
 except ImportError:
     pass
 
-# AUTO-HEALING ET VERROU D'INITIALISATION
-
 _IN_DOCKER = os.getenv("IS_MASTER_CONSOLE") == "1"
 _DATA_DIR = "/infrastructure/Data" if _IN_DOCKER else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Data"))
 _INIT_FLAG = os.path.join(_DATA_DIR, ".initialized")
@@ -54,7 +54,7 @@ if os.path.exists(_ENV_PATH):
                 break
 
 if not os.path.exists(_INIT_FLAG) or not _is_valid:
-    if os.path.exists(_INIT_FLAG): os.remove(_INIT_FLAG) # Purge des fichiers corrompus
+    if os.path.exists(_INIT_FLAG): os.remove(_INIT_FLAG)
     try:
         import init
         init.main()
@@ -65,7 +65,6 @@ if not os.path.exists(_INIT_FLAG) or not _is_valid:
         print(f"\033[91mErreur d'initialisation : {e}\033[0m")
         sys.exit(1)
         
-# *** PROTECTION GLOBALE : CRASH CTRL+D ET TIMEOUT D'INACTIVITE ***
 def input_with_timeout(prompt="", timeout=300, is_password=False):
     sys.stdout.write(prompt)
     sys.stdout.flush()
@@ -138,11 +137,9 @@ def safe_getpass(prompt=""):
 builtins.input = safe_input
 getpass.getpass = safe_getpass
 
-# *** PARAMETRES DE SECURITE ***
 SEUIL_CRITIQUE = 10       
 SEUIL_AVERTISSEMENT = 3   
 
-# *** DETECTION DOCKER ***
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 if _IN_DOCKER:
@@ -174,12 +171,13 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# *** DESIGN ***
 C_BASE = '\033[96m'
 C_OK = '\033[92m'
 C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
+
+PARC_INFORMATIQUE = ["linux-srv-1", "linux-srv-2", "win-wkst-1", "win-wkst-2", "win-srv-indispensable"]
 
 def display_lockout_screen(lock_until):
     while True:
@@ -204,7 +202,6 @@ def display_lockout_screen(lock_until):
     
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# *** CHIFFREMENT (FERNET) VIA .ENV ***
 load_dotenv(dotenv_path=env_path)
 env_key = os.getenv("FERNET_SECRET_KEY")
 
@@ -236,7 +233,6 @@ def calculate_hmac(file_path):
         return hmac.new(env_key.encode('utf-8'), data, hashlib.sha256).hexdigest()
     except: return None
 
-# *** ARCHITECTURE SHADOW BACKUP ***
 def atomic_update_database(json_path, data):
     with open(json_path, 'w') as f:
         json.dump(data, f, indent=4)
@@ -342,7 +338,6 @@ def verify_and_restore_integrity(json_path):
             time.sleep(4)
             sys.exit(1)
 
-# *** CONFIGURATION DES BACKUPS ***
 os.makedirs(BACKUP_PREFS_DIR, exist_ok=True)
 BACKUP_CONFIG_FILE = os.path.join(BACKUP_PREFS_DIR, "backup_config.json")
 os.makedirs(BACKUP_DATA_DIR, exist_ok=True)
@@ -439,6 +434,19 @@ def is_unique(users, field, value):
         if field in data and decrypt_val(data[field]) == value:
             return False
     return True
+
+import unicodedata
+def generate_username(prenom, nom, role, accounts):
+    p = unicodedata.normalize('NFD', prenom).encode('ascii', 'ignore').decode('utf-8').lower()
+    n = unicodedata.normalize('NFD', nom).encode('ascii', 'ignore').decode('utf-8').lower()
+    suffix = "-adm" if role == "admin" else "-soc" if role == "moniteur" else "-usr"
+    base = f"{p[0]}.{n}{suffix}"
+    final_user = base
+    counter = 2
+    while final_user in accounts:
+        final_user = f"{base}{counter}"
+        counter += 1
+    return final_user
 
 def manage_own_profile(current_user):
     clear_screen()
@@ -599,7 +607,6 @@ def manage_own_profile(current_user):
                 print(f"{C_DANGER}Erreur de sauvegarde : {e}{C_END}")
                 time.sleep(3)
 
-# *** PATCH DE LA BASE DE DONNEES ***
 def patch_database():
     try:
         if not os.path.exists(USER_DATA_PATH): 
@@ -622,14 +629,16 @@ def patch_database():
                 if "reset_by_admin" not in data:
                     data["reset_by_admin"] = False
                     changed = True
+                if "assigned_assets" not in data:
+                    data["assigned_assets"] = PARC_INFORMATIQUE if data.get("role") != "user" else []
+                    changed = True
             
             if changed:
                 atomic_update_database(USER_DATA_PATH, users)
-                logging.info("Mise a jour de la base de donnees effectuee (Signature HMAC incluse).")
+                logging.info("Mise a jour de la base de donnees effectuee (Patch Assets/HMAC).")
     except Exception as e:
         logging.error(f"Erreur lors du patch de la BDD : {e}")
 
-# *** FONCTIONS BACKUP ***
 def load_backup_config():
     default_config = {
         "interval_type": "days", 
@@ -1280,6 +1289,61 @@ def authenticate():
                 time.sleep(3)
                 return None, None
 
+        # === ETAPE MFA PAR MAIL POUR ADMIN CONSOLE ===
+        user_email = decrypt_val(user_data.get("email"))
+        if user_email and user_email != "Non renseigne":
+            expected_code = str(secrets.randbelow(900000) + 100000)
+            msg = MIMEText(f"Bonjour,\n\nVotre code MFA a usage unique pour l'acces a la Master Console est : {expected_code}\n\nL'equipe SOC.")
+            msg['Subject'] = 'CyberMonitors - Code MFA Master Console'
+            msg['From'] = os.getenv("EMAIL_USER")
+            msg['To'] = user_email
+            
+            try:
+                host = os.getenv("EMAIL_HOST")
+                port = int(os.getenv("EMAIL_PORT", 587))
+                pwd_app = os.getenv("EMAIL_PASSWORD")
+                mail_user = os.getenv("EMAIL_USER")
+
+                print(f"\n{C_BASE}[*] VERIFICATION MFA : Envoi du code a {user_email}...{C_END}")
+                logging.info(f"[{user}] Envoi du code MFA par email post-authentification")
+
+                if port == 465:
+                    with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                        server.login(mail_user, pwd_app)
+                        server.sendmail(mail_user, [user_email], msg.as_string())
+                else:
+                    with smtplib.SMTP(host, port, timeout=10) as server:
+                        server.starttls()
+                        server.login(mail_user, pwd_app)
+                        server.sendmail(mail_user, [user_email], msg.as_string())
+            except Exception as e:
+                print(f"{C_DANGER}[!] Erreur d'envoi du code MFA SMTP : {e}{C_END}")
+                time.sleep(3)
+                return None, None
+
+            attempts = 3
+            mfa_success = False
+            while attempts > 0:
+                code_in = input(f"{C_WARN}Code MFA recu par email : {C_END}").strip()
+                if code_in == expected_code:
+                    mfa_success = True
+                    break
+                attempts -= 1
+                if attempts > 0:
+                    print(f"{C_DANGER}Code invalide. Essais restants : {attempts}{C_END}")
+            
+            if not mfa_success:
+                logging.critical(f"[{user}] Echec lors de la validation du code MFA par mail")
+                print(f"{C_DANGER}Echec MFA. Connexion bloquee.{C_END}")
+                time.sleep(2)
+                return None, None
+            else:
+                logging.info(f"[{user}] Validation MFA reussie")
+        else:
+            print(f"{C_DANGER}[!] Adresse email non configuree. MFA impossible. Acces bloque.{C_END}")
+            time.sleep(3)
+            return None, None
+
         role = user_data.get("role", "user")
         logging.info(f"Connexion REUSSIE Utilisateur: {user} | Role: {role}")
         return user, role
@@ -1299,13 +1363,13 @@ def manage_users(current_admin):
             time.sleep(3)
             break
 
-        print(f"{'Utilisateur':<15} | {'Role':<10} | {'Reset':<5} | {'Bloque':<6}")
-        print("*" * 50)
+        print(f"{'Utilisateur':<20} | {'Role':<10} | {'Reset':<5} | {'Bloque':<6}")
+        print("*" * 55)
         for u, data in users.items():
             needs_reset = "Oui" if data.get("force_reset") else "Non"
             is_blocked = "Oui" if data.get("blocked") else "Non"
             c_bloc = C_DANGER if is_blocked == "Oui" else C_END
-            print(f"{u:<15} | {data.get('role', 'user'):<10} | {needs_reset:<5} | {c_bloc}{is_blocked:<6}{C_END}")
+            print(f"{u:<20} | {data.get('role', 'user'):<10} | {needs_reset:<5} | {c_bloc}{is_blocked:<6}{C_END}")
         
         print(f"\n1. {C_OK}Ajouter un utilisateur{C_END}")
         print(f"2. {C_DANGER}Supprimer un utilisateur{C_END}")
@@ -1361,25 +1425,33 @@ def manage_users(current_admin):
                     time.sleep(2)
                     continue
 
-                new_user = ""
+                new_role = ""
                 while True:
-                    new_user = input("3. Nom d'utilisateur (login) ['0' annuler] : ").strip().lower()
-                    if new_user == '0': 
+                    new_role = input("3. Role (admin/moniteur/user) ['0' annuler] : ").strip().lower()
+                    if new_role == '0': 
                         break
-                    if not new_user or new_user in users:
-                        print(f"{C_DANGER}Identifiant invalide ou deja existant.{C_END}")
+                    if new_role not in ['admin', 'user', 'moniteur', '']:
+                        print(f"{C_WARN}Role non reconnu.{C_END}")
                         continue
+                    if new_role == '': 
+                        new_role = 'user'
                     break
-                if new_user == '0': 
+                if new_role == '0': 
                     print(f"\n{C_WARN}Action annulee.{C_END}")
                     time.sleep(2)
                     continue
+                
+                new_user = generate_username(prenom, nom, new_role, users)
+                print(f"\n{C_OK}[+] Identifiant genere : {new_user}{C_END}")
 
                 email_in = ""
                 while True:
-                    email_in = input("4. Email (vide pour ignorer) ['0' annuler] : ").strip()
-                    if email_in in ['0', '']: 
+                    email_in = input("\n4. Email (OBLIGATOIRE pour validation MFA) ['0' annuler] : ").strip()
+                    if email_in == '0': 
                         break
+                    if not email_in:
+                        print(f"{C_DANGER}L'email est strictement obligatoire pour creer un compte (2FA).{C_END}")
+                        continue
                     if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email_in):
                         print(f"{C_DANGER}Format d'email invalide.{C_END}")
                         continue
@@ -1394,7 +1466,7 @@ def manage_users(current_admin):
 
                 phone_in = ""
                 while True:
-                    print("5. Telephone (vide pour ignorer) ['0' annuler]")
+                    print("\n5. Telephone (vide pour ignorer) ['0' annuler]")
                     c_code = input("   Pays (ex: FR, 'liste' pour voir, vide pour ignorer) : ").strip().lower()
                     if c_code == '0': 
                         phone_in = '0'
@@ -1466,11 +1538,6 @@ def manage_users(current_admin):
                         new_pwd = ''.join(secrets.choice(alphabet) for i in range(12))
                         if not check_password_complexity(new_pwd): 
                             break
-                    print(f"\n{C_OK}Mot de passe genere : {new_pwd}{C_END}")
-                    print(f"{C_WARN}ATTENTION : Notez-le, il ne s'affichera plus !{C_END}")
-                    input("Appuyez sur Entree quand vous l'avez note...")
-                    sys.stdout.write("\033[4A\033[J")
-                    sys.stdout.flush()
                     print(f"\n{C_OK}Mot de passe genere : [MASQUE PAR SECURITE]{C_END}\n")
                 else:
                     cancel_pwd = False
@@ -1493,20 +1560,58 @@ def manage_users(current_admin):
                         time.sleep(2)
                         continue
 
-                new_role = ""
-                while True:
-                    new_role = input("10. Role (admin/moniteur/user) ['0' annuler] : ").strip().lower()
-                    if new_role == '0': 
-                        break
-                    if new_role not in ['admin', 'user', 'moniteur', '']:
-                        print(f"{C_WARN}Role non reconnu.{C_END}")
-                        continue
-                    if new_role == '': 
-                        new_role = 'user'
-                    break
-                if new_role == '0': 
-                    print(f"\n{C_WARN}Action annulee.{C_END}")
-                    time.sleep(2)
+                assigned_assets = []
+                if new_role == "user":
+                    print("\n10. Assignation des machines (Restriction d'acces) :")
+                    for i, m in enumerate(PARC_INFORMATIQUE):
+                        print(f"   {i+1}. {m}")
+                    while True:
+                        choix_machines = input(f"{C_WARN}Entrez les numeros separes par des virgules (ex: 1,3,4) : {C_END}").strip()
+                        if not choix_machines:
+                            print(f"{C_DANGER}Vous devez assigner au moins une machine a un role 'user'.{C_END}")
+                            continue
+                        for val in choix_machines.split(','):
+                            val = val.strip()
+                            if val.isdigit():
+                                idx = int(val) - 1
+                                if 0 <= idx < len(PARC_INFORMATIQUE):
+                                    assigned_assets.append(PARC_INFORMATIQUE[idx])
+                        if assigned_assets:
+                            break
+                        else:
+                            print(f"{C_DANGER}Aucune machine valide selectionnee.{C_END}")
+                else:
+                    assigned_assets = PARC_INFORMATIQUE
+                    print(f"\n{C_OK}[+] Role Admin/Moniteur : Acces global ({len(PARC_INFORMATIQUE)} machines) autorise.{C_END}")
+
+                print(f"\n{C_BASE}[*] PROVISIONING : Envoi des identifiants au nouvel utilisateur...{C_END}")
+                msg = MIMEText(f"Bonjour {prenom},\n\nVotre compte CyberMonitors a ete cree avec succes.\n\nIdentifiant : {new_user}\nMot de passe temporaire : {new_pwd}\n\nLors de votre premiere connexion, le systeme vous demandera de modifier ce mot de passe, puis un code MFA vous sera envoye a cette adresse pour valider l'acces.\n\nL'equipe SOC.")
+                msg['Subject'] = 'CyberMonitors - Vos identifiants d\'acces'
+                msg['From'] = os.getenv("EMAIL_USER")
+                msg['To'] = email_in
+
+                try:
+                    host = os.getenv("EMAIL_HOST")
+                    port = int(os.getenv("EMAIL_PORT", 587))
+                    pwd_app = os.getenv("EMAIL_PASSWORD")
+                    mail_user = os.getenv("EMAIL_USER")
+                    
+                    if port == 465:
+                        with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                            server.login(mail_user, pwd_app)
+                            server.sendmail(mail_user, [email_in], msg.as_string())
+                    else:
+                        with smtplib.SMTP(host, port, timeout=10) as server:
+                            server.starttls()
+                            server.login(mail_user, pwd_app)
+                            server.sendmail(mail_user, [email_in], msg.as_string())
+                            
+                    print(f"{C_OK}[+] Email de bienvenue envoye avec succes.{C_END}")
+
+                except Exception as e:
+                    print(f"\n{C_DANGER}[!] Echec de l'envoi SMTP. Impossible de delivrer le mot de passe : {e}{C_END}")
+                    print(f"{C_WARN}Creation annulee pour eviter un compte orphelin.{C_END}")
+                    time.sleep(3)
                     continue
 
                 hashed = bcrypt.hashpw(new_pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -1523,16 +1628,17 @@ def manage_users(current_admin):
                             "role": new_role,
                             "force_reset": True,
                             "reset_by_admin": False,
+                            "assigned_assets": assigned_assets,
                             "nom": encrypt_val(nom),
                             "prenom": encrypt_val(prenom),
-                            "email": encrypt_val(email_in if email_in else "Non renseigne"),
+                            "email": encrypt_val(email_in),
                             "phone": encrypt_val(phone_in if phone_in else "Non renseigne"),
                             "entreprise": encrypt_val(entreprise if entreprise else "Non renseigne"),
                             "secteur": encrypt_val(secteur if secteur else "Non renseigne"),
                             "poste": encrypt_val(poste if poste else "Non renseigne")
                         }
                         atomic_update_database(USER_DATA_PATH, fresh_users)
-                    print(f"\n{C_OK}[+] Utilisateur '{new_user}' cree avec succes.{C_END}")
+                    print(f"\n{C_OK}[+] Utilisateur '{new_user}' integre dans la base de donnees.{C_END}")
                     logging.info(f"Creation compte: {new_user} par {current_admin}")
                 except Exception as e:
                     print(f"\n{C_DANGER}Erreur BDD : {e}{C_END}")
@@ -1609,6 +1715,13 @@ def manage_users(current_admin):
                     print(f"Statut     : {C_DANGER + 'BLOQUE' + C_END if u_data.get('blocked') else C_OK + 'ACTIF' + C_END}")
                     print(f"Role       : {u_data.get('role', 'user')}")
                     print(f"Reset req. : {'Oui' if u_data.get('force_reset') else 'Non'}")
+                    
+                    assigned_count = len(u_data.get("assigned_assets", []))
+                    if u_data.get("role") != "user":
+                        print(f"Machines   : TOUTES ({assigned_count} equipements)")
+                    else:
+                        print(f"Machines   : {assigned_count} equipement(s) attribue(s)")
+                    
                     print(f"Nom        : {decrypt_val(u_data.get('nom', ''))}")
                     print(f"Prenom     : {decrypt_val(u_data.get('prenom', ''))}")
                     print(f"Email      : {decrypt_val(u_data.get('email', ''))}")
@@ -1798,11 +1911,20 @@ def menu_actions(targets, current_user, current_role):
                 logging.info(f"[{current_user}] Ouverture d'une session SSH vers {m}")
                 os.system('clear')
                 
-                # PATCH : Injection de la clef Fernet via subprocess
                 env_key = os.getenv("FERNET_SECRET_KEY", "")
+                email_user = os.getenv("EMAIL_USER", "")
+                email_password = os.getenv("EMAIL_PASSWORD", "")
+                email_host = os.getenv("EMAIL_HOST", "")
+                email_port = os.getenv("EMAIL_PORT", "")
+
                 cmd_ssh = [
                     "docker", "exec", "-it", 
                     "-e", f"FERNET_SECRET_KEY={env_key}", 
+                    "-e", f"EMAIL_USER={email_user}",
+                    "-e", f"EMAIL_PASSWORD={email_password}",
+                    "-e", f"EMAIL_HOST={email_host}",
+                    "-e", f"EMAIL_PORT={email_port}",
+                    "-e", f"MACHINE_NAME={m}",
                     m, "python3", "/scripts/internal_login.py"
                 ]
                 subprocess.run(cmd_ssh)
@@ -1896,7 +2018,6 @@ def menu_actions(targets, current_user, current_role):
             clear_screen()
             print(f"\033[95m*** GESTION DE LA QUARANTAINE ***{C_END}\n")
             
-            # On recupere dynamiquement le VRAI nom du reseau via le dashboard
             net_ref, _ = run("docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' monitor_dashboard")
             real_network = net_ref.strip()
 
@@ -1910,12 +2031,10 @@ def menu_actions(targets, current_user, current_role):
                     print(f"{C_WARN}[*] {m} est eteint, impossible de modifier son reseau.{C_END}")
                     continue
                 
-                # Verifier quel reseau est actuellement attache a la cible
                 net_stat, _ = run(f"docker inspect -f '{{{{range $k, $v := .NetworkSettings.Networks}}}}{{{{$k}}}}{{{{end}}}}' {m}")
                 net_stat = net_stat.strip()
                 
                 if not net_stat:
-                    # LEVER LA QUARANTAINE
                     print(f"{C_OK}[*] Reconnexion de {m} au reseau {real_network}...{C_END}")
                     run(f"docker network connect {real_network} {m}")
                     print(f"{C_OK}[*] Degel de l'agent sur {m}...{C_END}")
@@ -1923,7 +2042,6 @@ def menu_actions(targets, current_user, current_role):
                     logging.warning(f"[{current_user}] a LEVE la quarantaine sur {m}")
                     print(f"{C_OK}[+] {m} est de nouveau operationnel.{C_END}\n")
                 else:
-                    # METTRE EN QUARANTAINE
                     print(f"{C_DANGER}[*] Isolation reseau de {m} en cours (Deconnexion de {net_stat})...{C_END}")
                     res_out, res_code = run(f"docker network disconnect {net_stat} {m}")
                     
@@ -1962,6 +2080,16 @@ def main():
                 continue
 
             m_list = get_machines()
+            
+            if current_role == "user":
+                try:
+                    with open(USER_DATA_PATH, 'r') as f:
+                        users_db = json.load(f)
+                        assigned = users_db.get(current_user, {}).get("assigned_assets", [])
+                    m_list = [m for m in m_list if m['name'] in assigned]
+                except Exception as e:
+                    m_list = [] 
+            
             print(f"{C_BASE}=========================================={C_END}")
             print(f"{C_BASE}       CYBER MONITOR : MASTER CONSOLE     {C_END}")
             print(f"{C_WARN}       Session Active : {current_user.upper()} [{current_role.upper()}] {C_END}")

@@ -15,8 +15,8 @@ from email.mime.text import MIMEText
 from cryptography.fernet import Fernet
 import uuid
 import builtins
+import unicodedata
 
-# --- VERROU DE SECURITE ANTI-BYPASS (CTRL+Z / CTRL+C / CTRL+D) ---
 original_input = builtins.input
 def secure_input(prompt=""):
     try:
@@ -44,9 +44,7 @@ def secure_getpass(prompt=""):
         sys.exit(1)
 
 getpass.getpass = secure_getpass
-# --------------------------------------------------------
 
-# - CONFIGURATION -
 ROOT_DIR = "/infrastructure" if os.environ.get("IS_MASTER_CONSOLE") == "1" else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 ENV_PATH = os.path.join(ROOT_DIR, "Docker", "TP-Docker-Projet-Annuel", ".env")
 DATA_DIR = os.path.join(ROOT_DIR, "Data")
@@ -61,23 +59,34 @@ SHADOW_BACKUP = os.path.join(USERS_DIR, ".users_docker.shadow.enc")
 INIT_FLAG = os.path.join(DATA_DIR, ".initialized")
 INIT_STATE_FILE = os.path.join(DATA_DIR, ".init_step")
 
-# *** DESIGN ***
 C_BASE = '\033[96m'
 C_OK = '\033[92m'
 C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
 
+PARC_INFORMATIQUE = ["linux-srv-1", "linux-srv-2", "win-wkst-1", "win-wkst-2", "win-srv-indispensable"]
+
+COUNTRIES = {
+    'fr': {'code': '+33', 'len': 9, 'name': 'France'},
+    'be': {'code': '+32', 'len': 9, 'name': 'Belgique'},
+    'ch': {'code': '+41', 'len': 9, 'name': 'Suisse'},
+    'ca': {'code': '+1', 'len': 10, 'name': 'Canada'},
+    'us': {'code': '+1', 'len': 10, 'name': 'Etats-Unis'},
+    'lu': {'code': '+352', 'len': 9, 'name': 'Luxembourg'},
+    'uk': {'code': '+44', 'len': 10, 'name': 'Royaume-Uni'}
+}
+
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def check_password_complexity(pwd):
+def check_password_complexity(pwd_str):
     missing = []
-    if len(pwd) < 12 : missing.append("12 caracteres minimum")
-    if not any(c.isupper() for c in pwd): missing.append("une majuscule")
-    if not any(c.islower() for c in pwd): missing.append("une minuscule")
-    if not any(c.isdigit() for c in pwd): missing.append("un chiffre")
-    if not any(c in string.punctuation for c in pwd): missing.append("un symbole specifique (!@#$%^&*...)")
+    if len(pwd_str) < 12 : missing.append("12 caracteres minimum")
+    if not any(c.isupper() for c in pwd_str): missing.append("une majuscule")
+    if not any(c.islower() for c in pwd_str): missing.append("une minuscule")
+    if not any(c.isdigit() for c in pwd_str): missing.append("un chiffre")
+    if not any(c in string.punctuation for c in pwd_str): missing.append("un symbole specifique (!@#$%^&*...)")
     return missing
 
 def wake_up_infrastructure():
@@ -89,6 +98,18 @@ def wake_up_infrastructure():
 def setup_directories():
     for d in [DATA_DIR, USERS_DIR, BACKUPS_DIR, LOGS_DIR, BACKUP_CONFIG_DIR]:
         os.makedirs(d, exist_ok=True)
+
+def generate_username(prenom, nom, role, accounts):
+    p = unicodedata.normalize('NFD', prenom).encode('ascii', 'ignore').decode('utf-8').lower()
+    n = unicodedata.normalize('NFD', nom).encode('ascii', 'ignore').decode('utf-8').lower()
+    suffix = "-adm" if role == "admin" else "-soc" if role == "monitor" else "-usr"
+    base_username = f"{p[0]}.{n}{suffix}"
+    final_username = base_username
+    counter = 2
+    while final_username in accounts:
+        final_username = f"{base_username}{counter}"
+        counter += 1
+    return final_username
 
 def attempt_auto_import():
     while True:
@@ -128,7 +149,6 @@ def attempt_auto_import():
             input("\nAppuyez sur Entree pour reessayer...")
             continue
 
-        # --- VERIFICATION DE L'INTEGRITE DU JSON ---
         try:
             with open(found_json, 'r') as f: json.load(f)
         except json.JSONDecodeError:
@@ -136,7 +156,6 @@ def attempt_auto_import():
             input("\nAppuyez sur Entree pour reessayer...")
             continue
 
-        # --- VERIFICATION STRICTE DU CONTENU DU .ENV ---
         required_keys = ["EMAIL_USER", "EMAIL_PASSWORD", "EMAIL_HOST", "EMAIL_PORT", "FLASK_SECRET_KEY", "FERNET_SECRET_KEY"]
         imported_env_vars = {}
         
@@ -155,7 +174,6 @@ def attempt_auto_import():
             input("\nAppuyez sur Entree pour reessayer...")
             continue
 
-        # --- VERIFICATION DE LA CLEF FERNET (COMPATIBILITE BDD) ---
         db_action = "RESTORE_ALL" 
 
         while True:
@@ -166,7 +184,6 @@ def attempt_auto_import():
                 with open(found_json, 'r') as f:
                     test_data = json.load(f)
                 
-                # S'il y a des utilisateurs, on teste le dechiffrement reel d'une donnee
                 if test_data:
                     first_u = list(test_data.keys())[0]
                     test_val = test_data[first_u].get("nom", "")
@@ -197,7 +214,6 @@ def attempt_auto_import():
             else:
                 print(f"{C_DANGER}Choix invalide.{C_END}")
 
-        # --- VERIFICATION PAR ENVOI DE CODE (Tests des Mails Importes) ---
         print(f"\n{C_BASE}[*] Verification des identifiants mail importes...{C_END}")
 
         mail = imported_env_vars['EMAIL_USER']
@@ -260,7 +276,6 @@ def attempt_auto_import():
         if not code_validated:
             continue
 
-        # --- SAUVEGARDE FINALE DES FICHIERS ---
         with open(ENV_PATH, 'w') as f:
             for k, v in imported_env_vars.items():
                 f.write(f"{k}={v}\n")
@@ -385,8 +400,8 @@ def main():
         elif etape == 2:
             clear_screen()
             print(f"{C_BASE}=== ETAPE 1 : CONFIGURATION EMAIL ==={C_END}")
-            print(f"{C_WARN}La configuration d'une adresse email est OBLIGATOIRE pour le monitoring.{C_END}")
-            print("Service mail utilise pour les alertes (Tapez 0 pour revenir) :")
+            print(f"{C_WARN}La configuration d'une adresse email est OBLIGATOIRE pour le MFA.{C_END}")
+            print("Service mail utilise pour l'authentification (Tapez 0 pour revenir) :")
             print("1. Google (Gmail)   2. Microsoft (Outlook/Hotmail)   3. Autre (SMTP)")
             choix = input("Choix (1-3) : ").strip()
 
@@ -413,6 +428,7 @@ def main():
                     continue
                     
                 env_vars['EMAIL_USER'] = mail
+                email_in = mail
                 break
                 
             if mail == '0': continue
@@ -425,25 +441,24 @@ def main():
                 print(f"\n{C_WARN}[SMTP] Assurez-vous que votre fournisseur autorise les mots de passe d'application.{C_END}")
 
             while True:
-                pwd = input(f"{C_BASE}Mot de passe d'application (0 pour retour) : {C_END}").replace(" ", "").strip()
-                if pwd == '0': break
+                pwd_app = input(f"{C_BASE}Mot de passe d'application (0 pour retour) : {C_END}").replace(" ", "").strip()
+                if pwd_app == '0': break
                 
                 if choix == '1':
-                    if len(pwd) == 16 and pwd.isalpha():
-                        env_vars['EMAIL_PASSWORD'] = pwd
+                    if len(pwd_app) == 16 and pwd_app.isalpha():
+                        env_vars['EMAIL_PASSWORD'] = pwd_app
                         break
                     else:
                         print(f"{C_DANGER}[!] Invalide. Un mot de passe d'app Google fait 16 lettres (sans espaces ni chiffres).{C_END}")
                 else:
-                    if len(pwd) >= 8:
-                        env_vars['EMAIL_PASSWORD'] = pwd
+                    if len(pwd_app) >= 8:
+                        env_vars['EMAIL_PASSWORD'] = pwd_app
                         break
                     else:
                         print(f"{C_DANGER}[!] Saisie invalide ou mot de passe trop court.{C_END}")
             
-            if pwd == '0': continue
+            if pwd_app == '0': continue
 
-            # --- VERIFICATION PAR ENVOI DE CODE ---
             if choix == '3':
                 while True:
                     smtp_host = input(f"\n{C_BASE}Serveur SMTP (ex: smtp.mail.yahoo.com) (0 pour retour) : {C_END}").strip()
@@ -477,16 +492,16 @@ def main():
             try:
                 host = env_vars['EMAIL_HOST']
                 port = int(env_vars['EMAIL_PORT'])
-                pwd_app = env_vars['EMAIL_PASSWORD']
+                pwd_email = env_vars['EMAIL_PASSWORD']
                 
                 if port == 465:
                     with smtplib.SMTP_SSL(host, port, timeout=10) as server:
-                        server.login(mail, pwd_app)
+                        server.login(mail, pwd_email)
                         server.sendmail(mail, [mail], msg.as_string())
                 else:
                     with smtplib.SMTP(host, port, timeout=10) as server:
                         server.starttls()
-                        server.login(mail, pwd_app)
+                        server.login(mail, pwd_email)
                         server.sendmail(mail, [mail], msg.as_string())
                 success = True
             except Exception as e:
@@ -577,10 +592,22 @@ def main():
 
         elif etape == 4:
             clear_screen()
-            print(f"{C_WARN}=== ETAPE 3 : IDENTIFIANTS DU COMPTE MASTER ==={C_END}")
-            admin_user = input("\nIdentifiant Master (ex: root) (0 pour retour) : ").strip().lower()
-            if admin_user == '0': etape = 3; continue
-            if not admin_user: continue
+            print(f"{C_WARN}=== ETAPE 3 : PROFIL DU MASTER ADMIN ==={C_END}")
+            print("Creation du premier compte administrateur racine.\n")
+            
+            prenom = input("Prenom de l'administrateur (0 pour retour) : ").strip().capitalize()
+            if prenom == '0': etape = 3; continue
+            if not prenom: continue
+
+            nom = input("Nom de famille (0 pour retour) : ").strip().upper()
+            if nom == '0': etape = 3; continue
+            if not nom: continue
+
+            admin_user = generate_username(prenom, nom, "admin", {})
+            print(f"\n{C_OK}==================================================={C_END}")
+            print(f"{C_OK}[+] VOTRE IDENTIFIANT DE CONNEXION : {C_BASE}{admin_user}{C_END}")
+            print(f"{C_WARN}[!] NOTEZ-LE BIEN : Il vous sera demande a chaque connexion.{C_END}")
+            print(f"{C_OK}==================================================={C_END}\n")
 
             while True:
                 pwd_master = getpass.getpass("Mot de passe (0 pour retour) : ").strip()
@@ -595,22 +622,50 @@ def main():
                     break
                 print(f"{C_DANGER}Correspondance echouee.{C_END}")
             if pwd_master == '0': continue
-            etape = 5
 
-        elif etape == 5:
-            clear_screen()
-            print(f"{C_WARN}=== ETAPE 4 : PROFIL DU MASTER ADMIN ==={C_END}")
-            print("Veuillez renseigner vos informations (Tapez 0 pour revenir en arriere).\n")
-            
-            nom = input("Nom de famille (0 pour retour) : ").strip()
-            if nom == '0': etape = 4; continue
-            
-            prenom = input("Prenom (0 pour retour) : ").strip()
-            if prenom == '0': etape = 4; continue
-            
-            email_in = input("Email (vide pour ignorer) : ").strip()
-            phone_in = input("Telephone (vide pour ignorer) : ").strip()
-            
+            phone_in = ""
+            while True:
+                print("\nTelephone (vide pour ignorer) ['0' annuler]")
+                c_code = input("   Pays (ex: FR, 'liste' pour voir, vide pour ignorer) : ").strip().lower()
+                if c_code == '0': 
+                    phone_in = '0'
+                    break
+                if c_code == '': 
+                    break
+                
+                if c_code == 'liste':
+                    for k, v in COUNTRIES.items(): 
+                        print(f"   * {k.upper()} : {v['name']} ({v['code']})")
+                    continue
+                    
+                if c_code not in COUNTRIES:
+                    print(f"{C_DANGER}Pays inconnu. Tapez 'liste' pour voir les choix.{C_END}")
+                    continue
+                    
+                country = COUNTRIES[c_code]
+                num = input(f"   Numero {country['code']} : ").strip()
+                if num == '0': 
+                    phone_in = '0'
+                    break
+                
+                num = num.replace(" ", "").replace(".", "").replace("-", "")
+                if num.startswith(country['code']): 
+                    num = num[len(country['code']):]
+                if num.startswith('0'): 
+                    num = num[1:] 
+                
+                if len(num) != country['len']:
+                    print(f"{C_DANGER}Longueur invalide. Attente de {country['len']} chiffres apres le {country['code']}.{C_END}")
+                    continue
+                    
+                full_phone = country['code'] + num
+                phone_in = full_phone
+                break
+
+            if phone_in == '0':
+                etape = 3
+                continue
+
             entreprise = input("Entreprise (vide = CyberMonitors) : ").strip()
             secteur = input("Secteur (vide = IT Security) : ").strip()
             poste = input("Poste (vide = Administrateur Systeme) : ").strip()
@@ -618,7 +673,6 @@ def main():
             if not entreprise: entreprise = "CyberMonitors"
             if not secteur: secteur = "IT Security"
             if not poste: poste = "Administrateur Systeme"
-            if not email_in: email_in = "Non renseigne"
             if not phone_in: phone_in = "Non renseigne"
 
             cipher = Fernet(fernet_key.encode('utf-8'))
@@ -633,6 +687,7 @@ def main():
                     "force_reset": False, 
                     "reset_by_admin": False,
                     "failed_attempts": 0,
+                    "assigned_assets": PARC_INFORMATIQUE,
                     "nom": encrypt_val(nom), 
                     "prenom": encrypt_val(prenom),
                     "email": encrypt_val(email_in), 
@@ -657,7 +712,7 @@ def main():
 
         elif etape == 6:
             if configure_backup() == "BACK":
-                etape = 1 if mode == '2' else 5
+                etape = 1 if mode == '2' else 4
                 continue
             etape = 7
 
