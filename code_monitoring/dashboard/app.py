@@ -31,7 +31,7 @@ app = Flask(__name__)
 # Cle secrete pour signer les sessions et les messages flash.
 # La valeur par defaut ne sert qu'en dev local, en prod elle vient
 # toujours de la variable d'environnement FLASK_SECRET
-app.secret_key = os.environ.get('FLASK_SECRET', 'dev-key-very-weak')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-key-very-weak')
 
 # Une session expire au bout de 15 minutes d'inactivite, et on la
 # renouvelle a chaque requete tant que l'utilisateur reste actif.
@@ -39,6 +39,18 @@ app.secret_key = os.environ.get('FLASK_SECRET', 'dev-key-very-weak')
 # une session ouverte indefiniment sur un poste partage
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=15)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+
+# Force le navigateur a n'envoyer le cookie que si la connexion est securisee (HTTPS)
+# Cela empeche l'interception du cookie sur un reseau Wi-Fi public par exemple
+app.config['SESSION_COOKIE_SECURE'] = True
+
+# Bien que Flask le fasse par defaut, l'ecrire explicitement est une bonne pratique
+# de developpement securise pour se premunir des attaques XSS
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+
+# Empeche le cookie d'etre envoye lors de requetes provenant d'autres sites web
+# C'est une protection essentielle contre les attaques CSRF (Cross-Site Request Forgery)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # BASE_DIR peut etre surcharge par la variable d'environnement DATA_DIR,
 # ce qui est pratique pour faire tourner l'app hors Docker (tests locaux
