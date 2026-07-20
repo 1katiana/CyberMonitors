@@ -10,10 +10,41 @@ import time
 import string
 import shutil
 import subprocess
+import smtplib
+from email.mime.text import MIMEText
 from cryptography.fernet import Fernet
 import uuid
+import builtins
+import unicodedata
 
-# --- CONFIGURATION ---
+original_input = builtins.input
+def secure_input(prompt=""):
+    try:
+        res = original_input(prompt)
+        if '\x1a' in res or '\x03' in res or '\x04' in res: 
+            print(f"\n\033[91m[!] Interruption (Ctrl) detectee. Arret de securite immediat.\033[0m")
+            sys.exit(1)
+        return res
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n\033[91m[!] Interruption detectee. Arret de securite immediat.\033[0m")
+        sys.exit(1)
+
+builtins.input = secure_input
+
+original_getpass = getpass.getpass
+def secure_getpass(prompt=""):
+    try:
+        res = original_getpass(prompt)
+        if '\x1a' in res or '\x03' in res or '\x04' in res:
+            print(f"\n\033[91m[!] Interruption (Ctrl) detectee. Arret de securite immediat.\033[0m")
+            sys.exit(1)
+        return res
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n\033[91m[!] Interruption detectee. Arret de securite immediat.\033[0m")
+        sys.exit(1)
+
+getpass.getpass = secure_getpass
+
 ROOT_DIR = "/infrastructure" if os.environ.get("IS_MASTER_CONSOLE") == "1" else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 ENV_PATH = os.path.join(ROOT_DIR, "Docker", "TP-Docker-Projet-Annuel", ".env")
 DATA_DIR = os.path.join(ROOT_DIR, "Data")
@@ -26,24 +57,36 @@ JSON_PATH = os.path.join(USERS_DIR, "users_docker.json")
 HMAC_SIGN_FILE = os.path.join(USERS_DIR, ".users_docker.hmac")
 SHADOW_BACKUP = os.path.join(USERS_DIR, ".users_docker.shadow.enc")
 INIT_FLAG = os.path.join(DATA_DIR, ".initialized")
+INIT_STATE_FILE = os.path.join(DATA_DIR, ".init_step")
 
-# *** DESIGN ***
 C_BASE = '\033[96m'
 C_OK = '\033[92m'
 C_WARN = '\033[93m'
 C_DANGER = '\033[91m'
 C_END = '\033[0m'
 
+PARC_INFORMATIQUE = ["linux-srv-1", "linux-srv-2", "win-wkst-1", "win-wkst-2", "win-srv-indispensable"]
+
+COUNTRIES = {
+    'fr': {'code': '+33', 'len': 9, 'name': 'France'},
+    'be': {'code': '+32', 'len': 9, 'name': 'Belgique'},
+    'ch': {'code': '+41', 'len': 9, 'name': 'Suisse'},
+    'ca': {'code': '+1', 'len': 10, 'name': 'Canada'},
+    'us': {'code': '+1', 'len': 10, 'name': 'Etats-Unis'},
+    'lu': {'code': '+352', 'len': 9, 'name': 'Luxembourg'},
+    'uk': {'code': '+44', 'len': 10, 'name': 'Royaume-Uni'}
+}
+
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def check_password_complexity(pwd):
+def check_password_complexity(pwd_str):
     missing = []
-    if len(pwd) < 6: missing.append("6 caracteres minimum")
-    if not any(c.isupper() for c in pwd): missing.append("une majuscule")
-    if not any(c.islower() for c in pwd): missing.append("une minuscule")
-    if not any(c.isdigit() for c in pwd): missing.append("un chiffre")
-    if not any(c in string.punctuation for c in pwd): missing.append("un symbole specifique (!@#$%^&*...)")
+    if len(pwd_str) < 12 : missing.append("12 caracteres minimum")
+    if not any(c.isupper() for c in pwd_str): missing.append("une majuscule")
+    if not any(c.islower() for c in pwd_str): missing.append("une minuscule")
+    if not any(c.isdigit() for c in pwd_str): missing.append("un chiffre")
+    if not any(c in string.punctuation for c in pwd_str): missing.append("un symbole specifique (!@#$%^&*...)")
     return missing
 
 def wake_up_infrastructure():
@@ -55,6 +98,18 @@ def wake_up_infrastructure():
 def setup_directories():
     for d in [DATA_DIR, USERS_DIR, BACKUPS_DIR, LOGS_DIR, BACKUP_CONFIG_DIR]:
         os.makedirs(d, exist_ok=True)
+
+def generate_username(prenom, nom, role, accounts):
+    p = unicodedata.normalize('NFD', prenom).encode('ascii', 'ignore').decode('utf-8').lower()
+    n = unicodedata.normalize('NFD', nom).encode('ascii', 'ignore').decode('utf-8').lower()
+    suffix = "-adm" if role == "admin" else "-soc" if role == "monitor" else "-usr"
+    base_username = f"{p[0]}.{n}{suffix}"
+    final_username = base_username
+    counter = 2
+    while final_username in accounts:
+        final_username = f"{base_username}{counter}"
+        counter += 1
+    return final_username
 
 def attempt_auto_import():
     while True:
@@ -71,11 +126,9 @@ def attempt_auto_import():
         print(f"\n{C_BASE}[*] Scan des fichiers de sauvegarde en cours...{C_END}")
         found_env, found_json = None, None
 
-        # 1. On verifie si le .env est directement a sa bonne place
         if os.path.exists(ENV_PATH):
             found_env = ENV_PATH
             
-        # 2. On scanne quand meme Data au cas ou
         for root, dirs, files in os.walk(DATA_DIR):
             for f in files:
                 name_lower = f.lower()
@@ -84,15 +137,15 @@ def attempt_auto_import():
                 elif name_lower in ['users_docker.json', 'users_docker.json.txt']: 
                     found_json = os.path.join(root, f)
 
-        missing = False
+        missing_files = False
         if not found_env:
             print(f"{C_DANGER}[!] Fichier .env introuvable.{C_END}")
-            missing = True
+            missing_files = True
         if not found_json:
             print(f"{C_DANGER}[!] Fichier users_docker.json introuvable.{C_END}")
-            missing = True
+            missing_files = True
 
-        if missing:
+        if missing_files:
             input("\nAppuyez sur Entree pour reessayer...")
             continue
 
@@ -103,14 +156,142 @@ def attempt_auto_import():
             input("\nAppuyez sur Entree pour reessayer...")
             continue
 
-        if found_env != ENV_PATH:
-            shutil.copy(found_env, ENV_PATH)
-        if found_json != JSON_PATH:
-            shutil.copy(found_json, JSON_PATH)
+        required_keys = ["EMAIL_USER", "EMAIL_PASSWORD", "EMAIL_HOST", "EMAIL_PORT", "FLASK_SECRET_KEY", "FERNET_SECRET_KEY"]
+        imported_env_vars = {}
+        
+        with open(found_env, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    imported_env_vars[k.strip()] = v.strip()
+        
+        missing_keys = [key for key in required_keys if not imported_env_vars.get(key)]
+        
+        if missing_keys:
+            print(f"{C_DANGER}[!] Import invalide : Le fichier .env est incomplet.{C_END}")
+            print(f"{C_WARN}Les valeurs suivantes sont manquantes ou vides : {', '.join(missing_keys)}{C_END}")
+            input("\nAppuyez sur Entree pour reessayer...")
+            continue
+
+        db_action = "RESTORE_ALL" 
+
+        while True:
+            fernet_key_test = imported_env_vars.get("FERNET_SECRET_KEY", "")
+            is_key_valid = False
+            try:
+                cipher = Fernet(fernet_key_test.encode('utf-8'))
+                with open(found_json, 'r') as f:
+                    test_data = json.load(f)
+                
+                if test_data:
+                    first_u = list(test_data.keys())[0]
+                    test_val = test_data[first_u].get("nom", "")
+                    if test_val and test_val != "Non renseigne":
+                        cipher.decrypt(test_val.encode('utf-8'))
+                is_key_valid = True
+            except Exception:
+                is_key_valid = False
+                
+            if is_key_valid:
+                break
+                
+            print(f"\n{C_DANGER}[!] ERREUR DE CHIFFREMENT DETECTEE{C_END}")
+            print(f"{C_WARN}La clef FERNET du .env ne peut pas dechiffrer la base users_docker.json importee !{C_END}")
+            print("1. Saisir la bonne clef FERNET_SECRET_KEY manuellement")
+            print("2. Conserver les identifiants mail du .env, mais recreer un compte Admin vierge")
+            print("0. Annuler la restauration")
             
-        print(f"\n{C_OK}[+] Fichiers importes et valides avec succes.{C_END}")
-        time.sleep(2)
-        return "OK"
+            c_err = input("Choix (0-2) : ").strip()
+            if c_err == '0':
+                return "BACK"
+            elif c_err == '1':
+                new_k = input(f"{C_BASE}Nouvelle clef FERNET : {C_END}").strip()
+                imported_env_vars["FERNET_SECRET_KEY"] = new_k
+            elif c_err == '2':
+                db_action = "RECREATE_DB"
+                break
+            else:
+                print(f"{C_DANGER}Choix invalide.{C_END}")
+
+        print(f"\n{C_BASE}[*] Verification des identifiants mail importes...{C_END}")
+
+        mail = imported_env_vars['EMAIL_USER']
+        host = imported_env_vars['EMAIL_HOST']
+        port = int(imported_env_vars['EMAIL_PORT'])
+        pwd_app = imported_env_vars['EMAIL_PASSWORD']
+
+        expected_code = str(secrets.randbelow(900000) + 100000)
+        msg = MIMEText(f"Bonjour,\n\nVoici votre code de verification pour valider la restauration de CyberMonitors : {expected_code}\n\nSi vous n'avez pas demande ce code, ignorez cet email.")
+        msg['Subject'] = 'Code de verification - Restauration CyberMonitors'
+        msg['From'] = mail
+        msg['To'] = mail
+
+        success = False
+        error_msg = ""
+        
+        try:
+            if port == 465:
+                with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                    server.login(mail, pwd_app)
+                    server.sendmail(mail, [mail], msg.as_string())
+            else:
+                with smtplib.SMTP(host, port, timeout=10) as server:
+                    server.starttls()
+                    server.login(mail, pwd_app)
+                    server.sendmail(mail, [mail], msg.as_string())
+            success = True
+        except Exception as e:
+            error_msg = str(e)
+
+        if not success:
+            print(f"{C_DANGER}[!] Echec de l'envoi de l'email avec les identifiants importes.{C_END}")
+            print(f"{C_WARN}Details : {error_msg}{C_END}")
+            print(f"{C_DANGER}Votre fichier .env est obselete ou invalide. Les identifiants email ne fonctionnent plus.{C_END}")
+            input("\nAppuyez sur Entree pour reessayer...")
+            continue
+            
+        print(f"{C_OK}[+] Email envoye avec succes a {mail}.{C_END}")
+        attempts = 3
+        code_validated = False
+        
+        while attempts > 0:
+            user_code = input(f"\n{C_WARN}Entrez le code a 6 chiffres recu (ou '0' pour annuler) : {C_END}").strip()
+            
+            if user_code == '0':
+                print(f"{C_DANGER}[!] Restauration annulee.{C_END}")
+                break
+            
+            if user_code == expected_code:
+                print(f"{C_OK}[+] Verification reussie ! Les identifiants importes sont valides.{C_END}")
+                code_validated = True
+                break
+            else:
+                attempts -= 1
+                if attempts > 0:
+                    print(f"{C_DANGER}[!] Code incorrect. Il vous reste {attempts} essai(s).{C_END}")
+                else:
+                    print(f"{C_DANGER}[!] Echecs trop nombreux. La restauration est annulee.{C_END}")
+        
+        if not code_validated:
+            continue
+
+        with open(ENV_PATH, 'w') as f:
+            for k, v in imported_env_vars.items():
+                f.write(f"{k}={v}\n")
+
+        if db_action == "RESTORE_ALL":
+            if found_json != JSON_PATH:
+                shutil.copy(found_json, JSON_PATH)
+            with open(INIT_STATE_FILE, 'w') as f:
+                f.write("MANUAL_IMPORT")
+            print(f"\n{C_OK}[+] Fichiers importes, controles et valides avec succes.{C_END}")
+            time.sleep(2)
+            return "OK"
+        else:
+            print(f"\n{C_WARN}[!] .env valide. La base de donnees doit etre recreee.{C_END}")
+            time.sleep(2)
+            return "RECREATE_DB"
 
 def configure_backup():
     clear_screen()
@@ -158,7 +339,6 @@ def configure_backup():
 def main():
     setup_directories()
 
-    # Variables d'etat
     etape = 1
     env_vars = {}
     fernet_key = ""
@@ -166,9 +346,22 @@ def main():
     hashed_pwd = ""
     mode = ""
     
-    # Variables de profil par defaut
     nom, prenom, email_in, phone_in = "", "", "", ""
     entreprise, secteur, poste = "", "", ""
+
+    if os.path.exists(INIT_STATE_FILE):
+        with open(INIT_STATE_FILE, 'r') as f:
+            saved_step = f.read().strip()
+        if saved_step == "MANUAL_IMPORT":
+            print(f"{C_WARN}[*] Reprise de l'installation detectee (Import manuel)...{C_END}")
+            mode = '2'
+            etape = 6
+            if os.path.exists(ENV_PATH):
+                with open(ENV_PATH, 'r') as f:
+                    for line in f:
+                        if line.startswith('FERNET_SECRET_KEY='):
+                            fernet_key = line.split('=', 1)[1].strip()
+            time.sleep(2)
 
     while True:
         if etape == 1:
@@ -191,7 +384,13 @@ def main():
                                 fernet_key = line.split('=', 1)[1].strip()
                     with open(JSON_PATH, 'rb') as f: data = f.read()
                     with open(HMAC_SIGN_FILE, 'w') as f: f.write(hmac.new(fernet_key.encode('utf-8'), data, hashlib.sha256).hexdigest())
-                    etape = 6 # On saute a la config backup
+                    etape = 6 
+                elif res == "RECREATE_DB":
+                    with open(ENV_PATH, 'r') as f:
+                        for line in f:
+                            if line.startswith('FERNET_SECRET_KEY='):
+                                fernet_key = line.split('=', 1)[1].strip()
+                    etape = 4
             elif mode == '1':
                 etape = 2
             else:
@@ -201,19 +400,145 @@ def main():
         elif etape == 2:
             clear_screen()
             print(f"{C_BASE}=== ETAPE 1 : CONFIGURATION EMAIL ==={C_END}")
-            print("Service mail utilise pour les alertes (Tapez 0 pour revenir) :")
-            print("1. Google   2. Microsoft   3. Passer")
+            print(f"{C_WARN}La configuration d'une adresse email est OBLIGATOIRE pour le MFA.{C_END}")
+            print("Service mail utilise pour l'authentification (Tapez 0 pour revenir) :")
+            print("1. Google (Gmail)   2. Microsoft (Outlook/Hotmail)   3. Autre (SMTP)")
             choix = input("Choix (1-3) : ").strip()
 
             if choix == '0': etape = 1; continue
             if choix not in ['1', '2', '3']: continue
 
-            if choix != '3':
-                pwd = input(f"\n{C_BASE}Collez votre mot de passe d'application ici (ou 0 pour revenir) : {C_END}").replace(" ", "").strip()
-                if pwd == '0': continue
-                env_vars['EMAIL_PASSWORD'] = pwd
+            while True:
+                mail = input(f"\n{C_BASE}Adresse e-mail complete (0 pour retour) : {C_END}").strip()
+                if mail == '0': break
+                
+                parts = mail.split('@')
+                if len(parts) != 2 or not parts[0] or not parts[1] or "." not in parts[1]:
+                    print(f"{C_DANGER}Format d'e-mail invalide (ex: nom@domaine.com).{C_END}")
+                    continue
+                    
+                domain = "@" + parts[1].lower()
+                
+                if choix == '1' and domain not in ['@gmail.com', '@googlemail.com']:
+                    print(f"{C_DANGER}[!] Choix Google invalide : L'adresse doit finir par @gmail.com{C_END}")
+                    continue
+                    
+                if choix == '2' and not any(domain.startswith(d) for d in ['@outlook.', '@hotmail.', '@live.', '@msn.']):
+                    print(f"{C_DANGER}[!] Choix Microsoft invalide : L'adresse doit etre @outlook, @hotmail, etc.{C_END}")
+                    continue
+                    
+                env_vars['EMAIL_USER'] = mail
+                email_in = mail
+                break
+                
+            if mail == '0': continue
+
+            if choix == '1':
+                print(f"\n{C_WARN}[GUIDE GOOGLE] 1. Securite > Valide en 2 etapes > Mots de passe des applications.{C_END}")
+            elif choix == '2':
+                print(f"\n{C_WARN}[GUIDE MS] Securite > Options avancees > Mots de passe d'application.{C_END}")
             else:
-                env_vars['EMAIL_PASSWORD'] = ""
+                print(f"\n{C_WARN}[SMTP] Assurez-vous que votre fournisseur autorise les mots de passe d'application.{C_END}")
+
+            while True:
+                pwd_app = input(f"{C_BASE}Mot de passe d'application (0 pour retour) : {C_END}").replace(" ", "").strip()
+                if pwd_app == '0': break
+                
+                if choix == '1':
+                    if len(pwd_app) == 16 and pwd_app.isalpha():
+                        env_vars['EMAIL_PASSWORD'] = pwd_app
+                        break
+                    else:
+                        print(f"{C_DANGER}[!] Invalide. Un mot de passe d'app Google fait 16 lettres (sans espaces ni chiffres).{C_END}")
+                else:
+                    if len(pwd_app) >= 8:
+                        env_vars['EMAIL_PASSWORD'] = pwd_app
+                        break
+                    else:
+                        print(f"{C_DANGER}[!] Saisie invalide ou mot de passe trop court.{C_END}")
+            
+            if pwd_app == '0': continue
+
+            if choix == '3':
+                while True:
+                    smtp_host = input(f"\n{C_BASE}Serveur SMTP (ex: smtp.mail.yahoo.com) (0 pour retour) : {C_END}").strip()
+                    if smtp_host == '0': break
+                    smtp_port_str = input(f"{C_BASE}Port SMTP (465 ou 587) (0 pour retour) : {C_END}").strip()
+                    if smtp_port_str == '0': break
+                    
+                    if smtp_port_str in ['465', '587']:
+                        smtp_port = int(smtp_port_str)
+                        break
+                    print(f"{C_DANGER}Port non supporte. Utilisez 465 (SSL) ou 587 (TLS).{C_END}")
+                
+                if smtp_host == '0' or smtp_port_str == '0': continue
+                env_vars['EMAIL_HOST'] = smtp_host
+                env_vars['EMAIL_PORT'] = str(smtp_port)
+            else:
+                env_vars['EMAIL_HOST'] = "smtp.gmail.com" if choix == '1' else "smtp-mail.outlook.com"
+                env_vars['EMAIL_PORT'] = "465" if choix == '1' else "587"
+
+            print(f"\n{C_BASE}[*] Tentative de connexion et envoi du code de verification...{C_END}")
+            
+            expected_code = str(secrets.randbelow(900000) + 100000)
+            msg = MIMEText(f"Bonjour,\n\nVoici votre code de verification pour initialiser CyberMonitors : {expected_code}\n\nSi vous n'avez pas demande ce code, ignorez cet email.")
+            msg['Subject'] = 'Code de verification CyberMonitors'
+            msg['From'] = mail
+            msg['To'] = mail
+
+            success = False
+            error_msg = ""
+            
+            try:
+                host = env_vars['EMAIL_HOST']
+                port = int(env_vars['EMAIL_PORT'])
+                pwd_email = env_vars['EMAIL_PASSWORD']
+                
+                if port == 465:
+                    with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                        server.login(mail, pwd_email)
+                        server.sendmail(mail, [mail], msg.as_string())
+                else:
+                    with smtplib.SMTP(host, port, timeout=10) as server:
+                        server.starttls()
+                        server.login(mail, pwd_email)
+                        server.sendmail(mail, [mail], msg.as_string())
+                success = True
+            except Exception as e:
+                error_msg = str(e)
+
+            if success:
+                print(f"{C_OK}[+] Email envoye avec succes a {mail}.{C_END}")
+                attempts = 3
+                code_validated = False
+                
+                while attempts > 0:
+                    user_code = input(f"\n{C_WARN}Entrez le code a 6 chiffres recu (ou '0' si non recu/retour) : {C_END}").strip()
+                    
+                    if user_code == '0':
+                        print(f"{C_DANGER}[!] Configuration annulee. Vous pouvez recommencer.{C_END}")
+                        break
+                    
+                    if user_code == expected_code:
+                        print(f"{C_OK}[+] Verification reussie ! Compte mail confirme et fonctionnel.{C_END}")
+                        code_validated = True
+                        break
+                    else:
+                        attempts -= 1
+                        if attempts > 0:
+                            print(f"{C_DANGER}[!] Code incorrect. Il vous reste {attempts} essai(s).{C_END}")
+                        else:
+                            print(f"{C_DANGER}[!] Echecs trop nombreux. L'etape est annulee.{C_END}")
+                
+                if not code_validated:
+                    continue 
+            else:
+                print(f"{C_DANGER}[!] Echec de l'envoi de l'email.{C_END}")
+                print(f"{C_WARN}Details de l'erreur : {error_msg}{C_END}")
+                print(f"{C_DANGER}Verifiez votre mot de passe d'application ou que l'acces SMTP est bien autorise sur votre compte.{C_END}")
+                input("Appuyez sur Entree pour reessayer...")
+                continue
+                
             etape = 3
 
         elif etape == 3:
@@ -226,8 +551,15 @@ def main():
                 print(f"{C_DANGER}Saisie invalide.{C_END}")
 
             if c1 == '0': etape = 2; continue
-            if c1 == '2': env_vars['FLASK_SECRET_KEY'] = input("Clef : ").strip()
-            elif c1 == '1': env_vars['FLASK_SECRET_KEY'] = secrets.token_hex(24)
+            if c1 == '2': 
+                while True:
+                    flask_k = input("Clef (minimum 16 caracteres) : ").strip()
+                    if len(flask_k) >= 16:
+                        env_vars['FLASK_SECRET_KEY'] = flask_k
+                        break
+                    print(f"{C_DANGER}La clef ne peut pas etre vide et doit faire au moins 16 caracteres.{C_END}")
+            elif c1 == '1': 
+                env_vars['FLASK_SECRET_KEY'] = secrets.token_hex(24)
 
             while True:
                 print("\nCle FERNET_SECRET_KEY : 1. Auto  2. Manuelle  0. Retour")
@@ -240,11 +572,15 @@ def main():
                 while True:
                     k = input("Clef (ou 0 pour revenir) : ").strip()
                     if k == '0': break
+                    if not k:
+                        print(f"{C_DANGER}La clef ne peut pas etre vide.{C_END}")
+                        continue
                     try:
                         Fernet(k.encode('utf-8'))
                         fernet_key = k
                         break
-                    except: print(f"{C_DANGER}Cle invalide ou corrompue.{C_END}")
+                    except: 
+                        print(f"{C_DANGER}Cle invalide ou corrompue. Elle doit etre generable via Fernet.generate_key().{C_END}")
                 if k == '0': continue
             elif c2 == '1':
                 fernet_key = Fernet.generate_key().decode('utf-8')
@@ -256,49 +592,87 @@ def main():
 
         elif etape == 4:
             clear_screen()
-            print(f"{C_WARN}=== ETAPE 3 : IDENTIFIANTS DU COMPTE MASTER ==={C_END}")
-            admin_user = input("\nIdentifiant Master (ex: root) (0 pour retour) : ").strip().lower()
-            if admin_user == '0': etape = 3; continue
-            if not admin_user: continue
+            print(f"{C_WARN}=== ETAPE 3 : PROFIL DU MASTER ADMIN ==={C_END}")
+            print("Creation du premier compte administrateur racine.\n")
+            
+            prenom = input("Prenom de l'administrateur (0 pour retour) : ").strip().capitalize()
+            if prenom == '0': etape = 3; continue
+            if not prenom: continue
+
+            nom = input("Nom de famille (0 pour retour) : ").strip().upper()
+            if nom == '0': etape = 3; continue
+            if not nom: continue
+
+            admin_user = generate_username(prenom, nom, "admin", {})
+            print(f"\n{C_OK}==================================================={C_END}")
+            print(f"{C_OK}[+] VOTRE IDENTIFIANT DE CONNEXION : {C_BASE}{admin_user}{C_END}")
+            print(f"{C_WARN}[!] NOTEZ-LE BIEN : Il vous sera demande a chaque connexion.{C_END}")
+            print(f"{C_OK}==================================================={C_END}\n")
 
             while True:
-                pwd = getpass.getpass("Mot de passe (0 pour retour) : ").strip()
-                if pwd == '0': break
-                missing = check_password_complexity(pwd)
+                pwd_master = getpass.getpass("Mot de passe (0 pour retour) : ").strip()
+                if pwd_master == '0': break
+                missing = check_password_complexity(pwd_master)
                 if missing:
                     print(f"{C_DANGER}Manque : {', '.join(missing)}{C_END}")
                     continue
                 confirm = getpass.getpass("Confirmez le mot de passe : ").strip()
-                if pwd == confirm:
-                    hashed_pwd = bcrypt.hashpw(pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                if pwd_master == confirm:
+                    hashed_pwd = bcrypt.hashpw(pwd_master.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                     break
                 print(f"{C_DANGER}Correspondance echouee.{C_END}")
-            if pwd == '0': continue
-            etape = 5
+            if pwd_master == '0': continue
 
-        elif etape == 5:
-            clear_screen()
-            print(f"{C_WARN}=== ETAPE 4 : PROFIL DU MASTER ADMIN ==={C_END}")
-            print("Veuillez renseigner vos informations (Tapez 0 pour revenir en arriere).\n")
-            
-            nom = input("Nom de famille (0 pour retour) : ").strip()
-            if nom == '0': etape = 4; continue
-            
-            prenom = input("Prenom (0 pour retour) : ").strip()
-            if prenom == '0': etape = 4; continue
-            
-            email_in = input("Email (vide pour ignorer) : ").strip()
-            phone_in = input("Telephone (vide pour ignorer) : ").strip()
-            
+            phone_in = ""
+            while True:
+                print("\nTelephone (vide pour ignorer) ['0' annuler]")
+                c_code = input("   Pays (ex: FR, 'liste' pour voir, vide pour ignorer) : ").strip().lower()
+                if c_code == '0': 
+                    phone_in = '0'
+                    break
+                if c_code == '': 
+                    break
+                
+                if c_code == 'liste':
+                    for k, v in COUNTRIES.items(): 
+                        print(f"   * {k.upper()} : {v['name']} ({v['code']})")
+                    continue
+                    
+                if c_code not in COUNTRIES:
+                    print(f"{C_DANGER}Pays inconnu. Tapez 'liste' pour voir les choix.{C_END}")
+                    continue
+                    
+                country = COUNTRIES[c_code]
+                num = input(f"   Numero {country['code']} : ").strip()
+                if num == '0': 
+                    phone_in = '0'
+                    break
+                
+                num = num.replace(" ", "").replace(".", "").replace("-", "")
+                if num.startswith(country['code']): 
+                    num = num[len(country['code']):]
+                if num.startswith('0'): 
+                    num = num[1:] 
+                
+                if len(num) != country['len']:
+                    print(f"{C_DANGER}Longueur invalide. Attente de {country['len']} chiffres apres le {country['code']}.{C_END}")
+                    continue
+                    
+                full_phone = country['code'] + num
+                phone_in = full_phone
+                break
+
+            if phone_in == '0':
+                etape = 3
+                continue
+
             entreprise = input("Entreprise (vide = CyberMonitors) : ").strip()
             secteur = input("Secteur (vide = IT Security) : ").strip()
             poste = input("Poste (vide = Administrateur Systeme) : ").strip()
 
-            # Application des valeurs par defaut
             if not entreprise: entreprise = "CyberMonitors"
             if not secteur: secteur = "IT Security"
             if not poste: poste = "Administrateur Systeme"
-            if not email_in: email_in = "Non renseigne"
             if not phone_in: phone_in = "Non renseigne"
 
             cipher = Fernet(fernet_key.encode('utf-8'))
@@ -313,6 +687,7 @@ def main():
                     "force_reset": False, 
                     "reset_by_admin": False,
                     "failed_attempts": 0,
+                    "assigned_assets": PARC_INFORMATIQUE,
                     "nom": encrypt_val(nom), 
                     "prenom": encrypt_val(prenom),
                     "email": encrypt_val(email_in), 
@@ -323,7 +698,6 @@ def main():
                 }
             }
             
-            # L'ajout de 'indent=4' garantit un formatage vertical propre et lisible !
             with open(JSON_PATH, 'w') as f: 
                 json.dump(users_data, f, indent=4)
                 
@@ -338,12 +712,14 @@ def main():
 
         elif etape == 6:
             if configure_backup() == "BACK":
-                etape = 1 if mode == '2' else 5
+                etape = 1 if mode == '2' else 4
                 continue
             etape = 7
 
         elif etape == 7:
-            # === DEBLOCAGE FINAL ===
+            if os.path.exists(INIT_STATE_FILE):
+                os.remove(INIT_STATE_FILE)
+                
             with open(INIT_FLAG, 'w') as f: f.write("DONE")
             wake_up_infrastructure()
             print(f"\n{C_OK}======================================================{C_END}")
