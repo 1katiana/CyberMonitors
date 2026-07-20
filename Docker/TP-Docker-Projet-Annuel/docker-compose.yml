@@ -8,6 +8,7 @@ services:
     volumes:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
+       
     networks:
       - monitoring-net
     environment:
@@ -25,6 +26,7 @@ services:
     volumes:
       - ../../code_monitoring:/app/code_monitoring
       - ../../Data:/app/data
+      - ../../Data/Logs:/app/data/logs 
       - ../..:/infrastructure
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

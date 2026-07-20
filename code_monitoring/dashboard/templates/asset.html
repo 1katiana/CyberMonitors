@@ -1,5 +1,11 @@
 {% extends "layout.html" %}
 {% block content %}
+<script>
+    // Utilise par le script de rafraichissement plus bas pour savoir
+    // quelle machine interroger sur /api/asset/<name>
+    window.CURRENT_ASSET = "{{ asset.name }}";
+</script>
+
 <div style="text-align: center; margin-bottom: 40px;">
     <h1 style="font-size: 2.5rem; letter-spacing: 2px; color: #fff; text-transform: uppercase;">
         {{ asset.name }}
@@ -9,10 +15,10 @@
     {% set st_color = {'running': '#04d361', 'isolated': '#f75a68', 'stopped': '#8b949e', 'unknown': '#e0a200'}[st] %}
     {% set st_label = {'running': 'Connecté', 'isolated': 'Isolé du réseau', 'stopped': 'Éteint', 'unknown': 'Statut inconnu'}[st] %}
 
-    <div style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; margin-bottom: 15px;
+    <div id="status-badge" style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; margin-bottom: 15px;
         background-color: {{ st_color }}26; border: 1px solid {{ st_color }};">
-        <span style="width: 10px; height: 10px; border-radius: 50%; background-color: {{ st_color }}; box-shadow: 0 0 6px {{ st_color }};"></span>
-        <span style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: {{ st_color }};">
+        <span id="status-badge-dot" style="width: 10px; height: 10px; border-radius: 50%; background-color: {{ st_color }}; box-shadow: 0 0 6px {{ st_color }}; transition: background-color 0.4s, box-shadow 0.4s;"></span>
+        <span id="status-badge-text" style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: {{ st_color }}; transition: color 0.4s;">
             {{ st_label }}
         </span>
     </div>
@@ -28,68 +34,52 @@
 
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
 
-            {# ---- ALLUMER : actif uniquement si la machine est éteinte ---- #}
             <form action="/api/machine/action" method="POST" style="margin: 0;">
                 <input type="hidden" name="machine" value="{{ asset.name }}">
                 <input type="hidden" name="action" value="start">
-                <button type="submit" {% if st !='stopped' %}disabled{% endif %}
+                <button type="submit" id="btn-start" {% if st !='stopped' %}disabled{% endif %}
                         style="background-color: #04d361; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
-                    {% if st != 'stopped' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
-                        {% if st == 'stopped' %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    {% if st != 'stopped' %}opacity: 0.35; cursor: not-allowed;{% endif %}">
                     Allumer
                 </button>
             </form>
 
-            {# ---- REDÉMARRER : n'a de sens que si le conteneur tourne (running ou isolated) ---- #}
             <form action="/api/machine/action" method="POST" style="margin: 0;">
                 <input type="hidden" name="machine" value="{{ asset.name }}">
                 <input type="hidden" name="action" value="restart">
-                <button type="submit" {% if st == 'stopped' or st == 'unknown' %}disabled{% endif %}
+                <button type="submit" id="btn-restart" {% if st=='stopped' or st=='unknown' %}disabled{% endif %}
                         style="background-color: #0055ff; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
-                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
-                        {% if not (st == 'stopped' or st =='unknown' ) %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}">
                     Redémarrer
                 </button>
             </form>
 
-            {# ---- ÉTEINDRE : actif uniquement si la machine est allumée (running ou isolated) ---- #}
             <form action="/api/machine/action" method="POST" style="margin: 0;">
                 <input type="hidden" name="machine" value="{{ asset.name }}">
                 <input type="hidden" name="action" value="stop">
-                <button type="submit" {% if st == 'stopped' or st == 'unknown' %}disabled{% endif %}
+                <button type="submit" id="btn-stop" {% if st=='stopped' or st=='unknown' %}disabled{% endif %}
                         style="background-color: #e0a200; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s;
-                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
-                        {% if not (st == 'stopped' or st == 'unknown' ) %}onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'" {% endif %}>
+                    {% if st == 'stopped' or st == 'unknown' %}opacity: 0.35; cursor: not-allowed;{% endif %}">
                     Éteindre
                 </button>
             </form>
 
-            {# ---- ISOLER : actif uniquement si la machine tourne ET est connectée (running) ---- #}
             <form action="/api/machine/action" method="POST" style="margin: 0; margin-left: auto;">
                 <input type="hidden" name="machine" value="{{ asset.name }}">
                 <input type="hidden" name="action" value="isolate">
-                <button type="submit" {% if st !='running' %}disabled{% endif %}
+                <button type="submit" id="btn-isolate" {% if st !='running' %}disabled{% endif %}
                         style="background-color: #f75a68; color: white; border: 1px solid #f75a68; padding: 8px 20px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s; text-transform: uppercase; box-shadow: 0 0 10px rgba(247, 90, 104, 0.3);
-                    {% if st != 'running' %}opacity: 0.35; cursor: not-allowed; box-shadow: none;{% endif %}"
-                        {% if st == 'running' %}
-                        onmouseover="this.style.backgroundColor='transparent'; this.style.color='#f75a68';"
-                        onmouseout="this.style.backgroundColor='#f75a68'; this.style.color='white';"
-                        {% endif %}>
+                    {% if st != 'running' %}opacity: 0.35; cursor: not-allowed; box-shadow: none;{% endif %}">
                     ISOLER DU RÉSEAU
                 </button>
             </form>
 
-            {# ---- RECONNECTER : actif uniquement si la machine est isolée ---- #}
             <form action="/api/machine/action" method="POST" style="margin: 0;">
                 <input type="hidden" name="machine" value="{{ asset.name }}">
                 <input type="hidden" name="action" value="reconnect">
-                <button type="submit" {% if st !='isolated' %}disabled{% endif %}
+                <button type="submit" id="btn-reconnect" {% if st !='isolated' %}disabled{% endif %}
                         style="background-color: transparent; color: #04d361; border: 1px solid #04d361; padding: 8px 20px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.3s; text-transform: uppercase;
-                    {% if st != 'isolated' %}opacity: 0.35; cursor: not-allowed;{% endif %}"
-                        {% if st == 'isolated' %}
-                        onmouseover="this.style.backgroundColor='#04d361'; this.style.color='white';"
-                        onmouseout="this.style.backgroundColor='transparent'; this.style.color='#04d361';"
-                        {% endif %}>
+                    {% if st != 'isolated' %}opacity: 0.35; cursor: not-allowed;{% endif %}">
                     Reconnecter
                 </button>
             </form>
@@ -122,16 +112,99 @@
             <th>TEMP</th>
             <th>USERS</th>
         </tr>
-        {% for row in asset.history %}
-        <tr style="border-bottom: 1px solid #21262d;">
-            <td style="padding: 8px;">{{ row[5] }}</td>
-            <td style="text-align: center;">{{ row[0] }}%</td>
-            <td style="text-align: center;">{{ row[1] }}%</td>
-            <td style="text-align: center;">{{ row[2] }}%</td>
-            <td style="text-align: center;">{{ row[3] }}°C</td>
-            <td style="text-align: center;">{{ row[4] }}</td>
-        </tr>
-        {% endfor %}
+        <tbody id="history-tbody">
+            {% for row in asset.history %}
+            <tr style="border-bottom: 1px solid #21262d;">
+                <td style="padding: 8px;">{{ row[5] }}</td>
+                <td style="text-align: center;">{{ row[0] }}%</td>
+                <td style="text-align: center;">{{ row[1] }}%</td>
+                <td style="text-align: center;">{{ row[2] }}%</td>
+                <td style="text-align: center;">{{ row[3] }}°C</td>
+                <td style="text-align: center;">{{ row[4] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
 </div>
+
+<script>
+    // Rafraichissement specifique a cette page : badge de statut, boutons
+    // d'action et tableau d'historique. Les graphes et les points de
+    // couleur de la nav sont deja geres par le script commun dans layout.html
+    (function () {
+        const REFRESH_INTERVAL = 10000;
+
+        const STATUS_COLORS = { running: '#04d361', isolated: '#f75a68', stopped: '#8b949e', unknown: '#e0a200' };
+        const STATUS_LABELS = { running: 'Connecté', isolated: 'Isolé du réseau', stopped: 'Éteint', unknown: 'Statut inconnu' };
+
+        function updateBadge(status) {
+            const color = STATUS_COLORS[status] || STATUS_COLORS.unknown;
+            const label = STATUS_LABELS[status] || STATUS_LABELS.unknown;
+
+            const badge = document.getElementById('status-badge');
+            const dot = document.getElementById('status-badge-dot');
+            const text = document.getElementById('status-badge-text');
+
+            if (badge) {
+                badge.style.backgroundColor = color + '26';
+                badge.style.borderColor = color;
+            }
+            if (dot) {
+                dot.style.backgroundColor = color;
+                dot.style.boxShadow = '0 0 6px ' + color;
+            }
+            if (text) {
+                text.style.color = color;
+                text.textContent = label;
+            }
+        }
+
+        function setButtonEnabled(id, enabled) {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            btn.disabled = !enabled;
+            btn.style.opacity = enabled ? '1' : '0.35';
+            btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+        }
+
+        function updateButtons(status) {
+            setButtonEnabled('btn-start', status === 'stopped');
+            setButtonEnabled('btn-stop', status === 'running' || status === 'isolated');
+            setButtonEnabled('btn-restart', status === 'running' || status === 'isolated');
+            setButtonEnabled('btn-isolate', status === 'running');
+            setButtonEnabled('btn-reconnect', status === 'isolated');
+        }
+
+        function updateHistoryTable(history) {
+            const tbody = document.getElementById('history-tbody');
+            if (!tbody || !history) return;
+
+            tbody.innerHTML = history.map(function (row) {
+                return '<tr style="border-bottom: 1px solid #21262d;">'
+                    + '<td style="padding: 8px;">' + row[5] + '</td>'
+                    + '<td style="text-align: center;">' + row[0] + '%</td>'
+                    + '<td style="text-align: center;">' + row[1] + '%</td>'
+                    + '<td style="text-align: center;">' + row[2] + '%</td>'
+                    + '<td style="text-align: center;">' + row[3] + '°C</td>'
+                    + '<td style="text-align: center;">' + row[4] + '</td>'
+                    + '</tr>';
+            }).join('');
+        }
+
+        function pollAssetStatus() {
+            if (!window.CURRENT_ASSET) return;
+            fetch('/api/asset/' + encodeURIComponent(window.CURRENT_ASSET))
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data) return;
+                    updateBadge(data.status);
+                    updateButtons(data.status);
+                    updateHistoryTable(data.history);
+                })
+                .catch(function () { });
+        }
+
+        setInterval(pollAssetStatus, REFRESH_INTERVAL);
+    })();
+</script>
 {% endblock %}

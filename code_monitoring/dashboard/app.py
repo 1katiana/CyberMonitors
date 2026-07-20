@@ -3,6 +3,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 import sqlite3
 import os
 import sys
+import glob
 import bcrypt
 import pyotp
 import qrcode
@@ -13,12 +14,12 @@ import uuid
 import secrets
 import string
 import unicodedata
+import hmac
+import hashlib
 import docker
 from functools import wraps
 from datetime import timedelta
 from cryptography.fernet import Fernet
-import hmac
-import hashlib
 
 # On ajoute le dossier parent au PATH pour pouvoir importer les modules
 # maison (detetction_de_crises, alertes, visualisation) qui vivent a cote
@@ -39,13 +40,13 @@ app.secret_key = os.environ.get('FLASK_SECRET', 'dev-key-very-weak')
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=15)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = True
 
-#DB_PATH = "/app/data/monitoring.db"
-#JSON_PATH = "/app/data/Users/users_docker.json"
-
+# BASE_DIR peut etre surcharge par la variable d'environnement DATA_DIR,
+# ce qui est pratique pour faire tourner l'app hors Docker (tests locaux
+# par exemple) sans avoir /app/data en dur partout dans le code
 BASE_DIR = os.environ.get("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(BASE_DIR, "monitoring.db")
 JSON_PATH = os.path.join(BASE_DIR, "Users", "users_docker.json")
-
+INIT_MARKER = os.path.join(BASE_DIR, ".initialized")
 
 PARC_INFORMATIQUE = ["linux-srv-1", "linux-srv-2", "win-wkst-1", "win-wkst-2", "win-srv-indispensable"]
 
@@ -58,33 +59,85 @@ PASSWORD_MIN_LENGTH = 12
 # au cas ou la recherche dynamique plus bas ne trouve rien
 RESEAU_PRINCIPAL = "tp-docker-projet-annuel_monitoring-net"
 
+
+# ========================================================
+# 0. PROTECTION DES DONNEES (chiffrement PII + integrite du JSON)
+# ========================================================
+# On chiffre les champs personnels (nom, email, telephone...) stockes
+# dans users_docker.json avec Fernet, et on garde une empreinte HMAC du
+# fichier a cote pour detecter si quelqu'un l'a modifie en dehors de
+# l'appli (edition manuelle, script externe...). Tout ca est regroupe
+# ici plutot qu'eparpille dans le fichier
+
 FERNET_KEY = os.environ.get('FERNET_SECRET_KEY')
 cipher = Fernet(FERNET_KEY.encode('utf-8')) if FERNET_KEY else None
 
+
 def decrypt_val(encrypted_val):
+    """
+    Dechiffre un champ pour l'affichage. On reste tolerant : si la valeur
+    n'est pas chiffree (compte cree avant l'ajout du chiffrement, ou
+    valeur par defaut du genre "Non renseigne"), ou si le dechiffrement
+    echoue pour une raison ou une autre, on renvoie la valeur telle quelle
+    plutot que de faire planter la page profil
+    """
     if not cipher or not encrypted_val or encrypted_val == "Non renseigne":
         return encrypted_val
     try:
         return cipher.decrypt(encrypted_val.encode('utf-8')).decode('utf-8')
-    except:
+    except Exception:
         return encrypted_val
+
+
+def update_json_hmac(json_path, fernet_key):
+    """
+    Recalcule et ecrit le fichier .users_docker.hmac juste a cote du
+    JSON. A appeler systematiquement apres toute modification du fichier
+    de comptes, pour que la signature ne se decale jamais de la donnee
+    reelle. Ne fait rien si aucune cle Fernet n'est configuree
+    """
+    if not fernet_key:
+        return
+    try:
+        with open(json_path, 'rb') as f:
+            data = f.read()
+        signature = hmac.new(fernet_key.encode('utf-8'), data, hashlib.sha256).hexdigest()
+        hmac_file_path = os.path.join(os.path.dirname(json_path), ".users_docker.hmac")
+        with open(hmac_file_path, 'w') as h:
+            h.write(signature)
+    except Exception as e:
+        print(f"Erreur lors de la mise a jour du HMAC : {e}")
+
+
+# Au demarrage du conteneur, on s'assure que la signature HMAC existe et
+# correspond bien au JSON actuel, au cas ou l'app ait redemarre sans
+# qu'aucune ecriture n'ait eu lieu entre-temps. On ne fait ca que si le
+# fichier de comptes existe deja : au tout premier demarrage, avant que
+# le script d'initialisation ait tourne, le fichier n'existe pas encore
+# et ce n'est pas a nous de planter l'app pour ca (voir check_initialization
+# plus bas, qui gere deja cet etat "pas encore initialise")
+if FERNET_KEY and os.path.exists(JSON_PATH):
+    update_json_hmac(JSON_PATH, FERNET_KEY)
 
 
 @app.before_request
 def check_initialization():
-    # Si on n'est pas encore initialisé et qu'on n'est pas sur la route de login
-    # on bloque tout pour éviter les erreurs.
-    if not os.path.exists("/app/data/.initialized") and request.endpoint != 'static':
-        return "Système en cours d'initialisation. Veuillez patienter ou exécuter le script de démarrage."
+    """
+    Si le script d'initialisation n'a pas encore tourne (pas de fichier
+    marqueur .initialized), on bloque tout sauf les fichiers statiques,
+    pour eviter d'afficher des erreurs a moitie comprehensibles pendant
+    que la base de comptes ou la base SQLite n'existent pas encore
+    """
+    if not os.path.exists(INIT_MARKER) and request.endpoint != 'static':
+        return "Systeme en cours d'initialisation. Veuillez patienter ou executer le script de demarrage."
 
 
 def get_target_network_name():
     """
     Docker Compose prefixe generalement le nom du reseau avec le nom du
-    dossier du projet, du coup on ne peut pas juste taper "monitoring-net"
-    en dur et esperer que ca marche partout. Cette fonction va chercher
-    le vrai nom du reseau en listant les reseaux existants sur le daemon
-    et en gardant celui qui contient notre nom de base
+    dossier du projet. Cette fonction va chercher le vrai nom du reseau
+    en listant les reseaux existants sur le daemon et en gardant celui
+    qui contient notre nom de base
     """
     if docker_client is None:
         return RESEAU_PRINCIPAL
@@ -142,8 +195,57 @@ def admin_required(f):
 
 
 # ========================================================
-# 2. FONCTIONS DE RECUPERATION DE DONNEES
+# 2. ACCES A LA BASE DE COMPTES
 # ========================================================
+# Avant, la lecture et l'ecriture de users_docker.json etaient recopiees
+# a la main dans a peu pres toutes les routes qui en avaient besoin,
+# avec des petites variations d'un endroit a l'autre. Regrouper ca ici
+# evite les divergences de comportement et simplifie les routes plus bas
+
+def load_accounts():
+    """Raccourci utilise partout dans le fichier pour ne pas repeter le meme with open(...) a chaque fois"""
+    with open(JSON_PATH, "r") as f:
+        return json.load(f)
+
+
+def save_accounts(accounts):
+    """
+    Pendant sur l'ecriture. On recalcule systematiquement le HMAC juste
+    apres avoir sauvegarde, pour ne jamais se retrouver avec une
+    signature perimee par rapport au contenu reel du fichier
+    """
+    with open(JSON_PATH, "w") as f:
+        json.dump(accounts, f, indent=4)
+    update_json_hmac(JSON_PATH, FERNET_KEY)
+
+
+def get_visible_assets(username, role):
+    """
+    Renvoie la liste des machines que cet utilisateur a le droit de voir.
+    Les admins et les analystes SOC (monitor) voient tout le parc. Un
+    compte "user" ne voit que ce qui est liste dans son assigned_assets -
+    et si ce champ est absent ou vide, il ne voit rien du tout.
+
+    C'est important de partir du principe "rien par defaut" plutot que
+    "tout par defaut" pour ce role : avant cette fonction, asset_dashboard
+    donnait acces a tout le parc si assigned_assets etait absent, alors
+    que la navigation, elle, cachait tout dans le meme cas. Un compte
+    user mal configure pouvait donc quand meme acceder a n'importe quel
+    asset en tapant l'URL directement, meme s'il ne le voyait pas dans le
+    menu. Cette fonction est maintenant la seule source de verite,
+    utilisee a la fois pour la navigation et pour le controle d'acces
+    """
+    if role != "user":
+        return PARC_INFORMATIQUE
+
+    try:
+        accounts = load_accounts()
+    except Exception:
+        return []
+
+    user_data = accounts.get(username, {})
+    return user_data.get("assigned_assets", [])
+
 
 def get_machine_data(machine_table, limit=10):
     """
@@ -201,36 +303,28 @@ def get_container_status(nom_conteneur):
 @app.context_processor
 def inject_global_data():
     """
-    On injecte les données globales uniquement si l'utilisateur est connecté.
-    Si l'utilisateur n'est pas en session, on retourne des listes vides
-    pour ne pas afficher d'alertes ou de navigation sur la page de login.
+    Tout ce qui est renvoye ici est automatiquement disponible dans tous
+    les templates. C'est ce qui alimente la barre de navigation (liste
+    des machines visibles, petit point de couleur par machine) et la
+    bande d'alertes en haut de page
+
+    Si personne n'est connecte, on renvoie des listes vides plutot que
+    d'essayer de calculer un perimetre pour "personne" - ca evite
+    d'afficher de la navigation ou des alertes sur la page de login
     """
-    # Si pas de session utilisateur, on renvoie tout vide
     if "user" not in session:
         return dict(nav_machines=[], current_crises=[], nav_status={})
 
-    global_crises = []
-    
-    # Récupération des assets autorisés
-    try:
-        with open(JSON_PATH, "r") as f:
-            accounts = json.load(f)
-        user_data = accounts.get(session["user"], {})
-        
-        # Filtrage : si user, on restreint, sinon on montre tout le parc
-        if session.get("role") == "user":
-            user_assets = user_data.get("assigned_assets", [])
-        else:
-            user_assets = PARC_INFORMATIQUE
-    except Exception:
-        user_assets = []
+    visible_assets = get_visible_assets(session["user"], session.get("role"))
 
-    # Monitoring uniquement pour les assets autorisés
+    global_crises = []
     try:
         from detetction_de_crises.detection_de_crise import check_all_assets
-        global_crises = check_all_assets(user_assets)
+        global_crises = check_all_assets(visible_assets)
 
-        # Gestion des alertes mail (seulement si connecté)
+        # On evite de spammer les mails d'alerte a chaque rechargement de
+        # page : on envoie une fois, puis on retient qu'on a deja alerte
+        # tant que la crise persiste, via la session
         if global_crises and not session.get('alert_sent'):
             from alertes.envoie_mail import send_combined_alert
             send_combined_alert(global_crises)
@@ -238,16 +332,17 @@ def inject_global_data():
         elif not global_crises:
             session.pop('alert_sent', None)
     except Exception as e:
-        print(f"Erreur monitoring : {e}")
+        print(f"Erreur monitoring global : {e}")
 
-    nav_status = {name: get_container_status(name) for name in user_assets}
+    nav_status = {name: get_container_status(name) for name in visible_assets}
 
     return dict(
-        nav_machines=user_assets,
+        nav_machines=visible_assets,
         current_crises=global_crises,
         nav_status=nav_status
     )
-    
+
+
 def save_user_totp_secret(username, secret):
     """
     Enregistre le secret TOTP definitif dans users_docker.json une fois
@@ -256,13 +351,10 @@ def save_user_totp_secret(username, secret):
     Avant cet appel le secret ne vit que dans la session (voir setup_mfa)
     """
     try:
-        with open(JSON_PATH, "r") as f:
-            accounts = json.load(f)
-
+        accounts = load_accounts()
         if username in accounts:
             accounts[username]['totp_secret'] = secret
-            with open(JSON_PATH, "w") as f:
-                json.dump(accounts, f, indent=4)
+            save_accounts(accounts)
     except Exception as e:
         print(f"Erreur d'ecriture du secret MFA : {e}")
 
@@ -272,7 +364,7 @@ def save_user_totp_secret(username, secret):
 # ========================================================
 # Ces quatre routes forment un seul parcours de connexion en plusieurs
 # etapes. On ne pose jamais session["user"] avant d'etre certain que
-# TOUTES les etapes obligatoires sont passees (mot de passe correct,
+# toutes les etapes obligatoires sont passees (mot de passe correct,
 # eventuellement changement de mot de passe si force_reset, puis MFA).
 # En attendant, on utilise pre_auth_user comme une sorte de session
 # "provisoire" qui prouve juste qu'on a franchi l'etape precedente
@@ -293,8 +385,7 @@ def login():
         password_input = request.form.get("password").strip()
 
         try:
-            with open(JSON_PATH, "r") as f:
-                accounts = json.load(f)
+            accounts = load_accounts()
         except FileNotFoundError:
             flash("Erreur : La base d'utilisateurs est introuvable.", "danger")
             return render_template("login.html")
@@ -368,9 +459,7 @@ def force_reset_pwd():
             return redirect(url_for("force_reset_pwd"))
 
         try:
-            with open(JSON_PATH, "r") as f:
-                accounts = json.load(f)
-
+            accounts = load_accounts()
             stored_hash = accounts[username].get("password", "").encode('utf-8')
 
             # On interdit de reprendre exactement le meme mot de passe
@@ -388,9 +477,7 @@ def force_reset_pwd():
             accounts[username]["password"] = new_hashed
             accounts[username]["force_reset"] = False
             accounts[username]["reset_by_admin"] = False
-
-            with open(JSON_PATH, "w") as f:
-                json.dump(accounts, f, indent=4)
+            save_accounts(accounts)
 
             flash("Mot de passe mis a jour avec succes. Etape suivante : configuration MFA...", "success")
 
@@ -484,8 +571,7 @@ def verify_mfa():
     if request.method == "POST":
         token = request.form.get("token")
 
-        with open(JSON_PATH, "r") as f:
-            accounts = json.load(f)
+        accounts = load_accounts()
         secret = accounts.get(username, {}).get("totp_secret")
 
         if not secret:
@@ -523,28 +609,31 @@ def logout():
 @login_required
 def index():
     """
-    Page d'accueil : verifie s'il y a des crises en cours sur le parc
-    (et remonte un flash par crise), puis regenere les graphiques de
-    comparaison globale avant de les afficher. La generation des graphes
-    est faite a chaque chargement de page, donc si le dossier de sortie
-    n'est pas accessible ou que le module plante, on ne bloque pas
-    l'affichage pour autant (juste un print en log)
+    Page d'accueil : verifie s'il y a des crises en cours sur le
+    perimetre visible par l'utilisateur connecte (et remonte un flash
+    par crise), puis regenere les graphiques de comparaison avant de
+    les afficher. La generation des graphes est faite a chaque
+    chargement de page, donc si le dossier de sortie n'est pas
+    accessible ou que le module plante, on ne bloque pas l'affichage
+    pour autant (juste un print en log)
     """
+    visible_assets = get_visible_assets(session["user"], session.get("role"))
+
     try:
         from detetction_de_crises.detection_de_crise import check_all_assets
-        crises = check_all_assets(PARC_INFORMATIQUE)
+        crises = check_all_assets(visible_assets)
 
         if crises:
             for c in crises:
                 flash(f"ALERTE sur {c['asset']}: {', '.join(c['details'])}", "danger")
     except Exception as e:
-        print(f"Erreur systeme d'alerte: {e}")
+        print(f"Erreur systeme d'alerte : {e}")
 
     try:
         from visualisation import generate_comparison_graphs
-        generate_comparison_graphs(PARC_INFORMATIQUE)
+        generate_comparison_graphs(visible_assets)
     except Exception as e:
-        print(f"Erreur generation accueil: {e}")
+        print(f"Erreur generation accueil : {e}")
 
     compare_graphs = {
         "Charge CPU Global": "graphs/compare_cpu.svg",
@@ -565,26 +654,17 @@ def asset_dashboard(name):
        pas de sens de dire "acces refuse" a une machine qui n'existe pas)
     2) elle fait bien partie du perimetre assigne a l'utilisateur
        connecte (sinon on refuse, meme si l'URL est tapee a la main)
-    On ne fait jamais confiance uniquement au menu de navigation qui
-    masque deja les machines hors perimetre cote HTML - un utilisateur
-    un peu curieux peut toujours changer l'URL directement
+
+    Le perimetre est calcule par get_visible_assets, la meme fonction
+    qui filtre deja la navigation - on ne fait jamais confiance
+    uniquement au menu masque cote HTML, un utilisateur un peu curieux
+    peut toujours changer l'URL directement
     """
     if name not in PARC_INFORMATIQUE:
         abort(404)
 
-    try:
-        with open(JSON_PATH, "r") as f:
-            accounts = json.load(f)
-    except Exception:
-        flash("Erreur systeme : Impossible de verifier vos autorisations.", "danger")
-        return redirect(url_for("index"))
-
-    user_data = accounts.get(session["user"], {})
-    # Par defaut (compte sans assigned_assets defini, typiquement admin
-    # ou monitor), on considere que l'utilisateur voit tout le parc
-    user_assets = user_data.get("assigned_assets", PARC_INFORMATIQUE)
-
-    if name not in user_assets:
+    visible_assets = get_visible_assets(session["user"], session.get("role"))
+    if name not in visible_assets:
         flash("Acces Refuse : Cet equipement n'est pas dans votre perimetre d'autorisation.", "danger")
         return redirect(url_for("index"))
 
@@ -618,25 +698,22 @@ def asset_dashboard(name):
 @login_required
 def profil():
     """
-    Page de profil : on lit les infos depuis le fichier JSON.
-    Grace a la fonction decrypt_val, les donnees chiffrees (nom, prenom, email, etc.)
-    redeviennent lisibles pour l'utilisateur.
+    Page de profil : on lit les infos depuis le fichier JSON. Grace a
+    decrypt_val, les champs chiffres (nom, prenom, email, telephone...)
+    redeviennent lisibles pour l'affichage
     """
     try:
-        with open(JSON_PATH, "r") as f:
-            accounts = json.load(f)
+        accounts = load_accounts()
         user_info = accounts.get(session["user"], {})
     except Exception:
         user_info = {}
 
-    # On utilise decrypt_val pour chaque champ sensible
     data = {
         "username": session["user"],
         "role": session.get("role", "user"),
         "uuid": user_info.get("id", "Non defini"),
         "blocked": user_info.get("blocked", False),
         "force_reset": user_info.get("force_reset", False),
-        # On dechiffre les donnees privees pour l'affichage
         "nom": decrypt_val(user_info.get("nom", "Non renseigne")),
         "prenom": decrypt_val(user_info.get("prenom", "Non renseigne")),
         "email": decrypt_val(user_info.get("email", "Non renseigne")),
@@ -647,6 +724,7 @@ def profil():
     }
     return render_template("profil.html", user_data=data)
 
+
 # ========================================================
 # 5. GESTION DES COMPTES (IAM)
 # ========================================================
@@ -655,10 +733,9 @@ def generate_username(prenom, nom, role, accounts):
     """
     Convention de nommage maison : premiere lettre du prenom + le nom,
     avec un suffixe qui indique le role (-adm / -soc / -usr). Ca donne
-    par exemple j.dupont-usr pour un compte utilisateur metier. On
-    passe par unicodedata pour virer les accents (Jerome -> jerome et
-    pas j\xe9r\xf4me), sinon on se retrouve avec des identifiants
-    illisibles ou incompatibles avec certains outils systeme
+    par exemple j.dupont-usr pour un compte utilisateur metier. On passe
+    par unicodedata pour virer les accents, sinon on se retrouve avec des
+    identifiants illisibles ou incompatibles avec certains outils systeme
 
     En cas de doublon (deux Jean Dupont dans la meme boite, ca arrive),
     on ajoute juste un chiffre a la fin
@@ -683,13 +760,13 @@ def generate_strong_password(length=PASSWORD_MIN_LENGTH):
     Genere un mot de passe temporaire aleatoire pour les nouveaux
     comptes. On utilise secrets.choice() et pas random.choice(), c'est
     important : random n'est pas concu pour etre imprevisible dans un
-    contexte de securite, secrets si.
+    contexte de securite, secrets si
 
     La boucle while est un peu bourrin mais efficace : on tire un mot de
-    passe au hasard et on le garde seulement s'il coche toutes les
-    cases de la politique de complexite (maj, min, au moins 3 chiffres,
-    un symbole). Vu la taille de l'alphabet utilise, ca converge en
-    general en une poignee d'essais
+    passe au hasard et on le garde seulement s'il coche toutes les cases
+    de la politique de complexite (maj, min, au moins 3 chiffres, un
+    symbole). Vu la taille de l'alphabet utilise, ca converge en general
+    en une poignee d'essais
     """
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
     while True:
@@ -703,9 +780,11 @@ def generate_strong_password(length=PASSWORD_MIN_LENGTH):
 @login_required
 def create_account():
     """
-    Formulaire de creation de compte.
-    On ajoute maintenant le chiffrement Fernet sur les données sensibles
-    pour respecter la structure attendue par le script d'initialisation.
+    Formulaire de creation de compte, reserve aux admins et aux
+    analystes SOC (monitor). Les donnees personnelles (nom, email,
+    telephone, entreprise, secteur, poste) sont chiffrees avant d'etre
+    ecrites dans le JSON, pour respecter la structure attendue par le
+    script d'initialisation
     """
     creator_role = session.get("role")
     if creator_role not in ["admin", "monitor"]:
@@ -732,8 +811,7 @@ def create_account():
             return redirect(url_for("create_account"))
 
         try:
-            with open(JSON_PATH, "r") as f:
-                accounts = json.load(f)
+            accounts = load_accounts()
         except Exception:
             flash("Erreur fatale : Base de donnees JSON introuvable.", "danger")
             return redirect(url_for("index"))
@@ -742,12 +820,15 @@ def create_account():
         temp_password = generate_strong_password()
         hashed_password = bcrypt.hashpw(temp_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-        # Si le rôle n'est pas 'user', il a accès à tout par défaut
+        # Pour les roles admin et monitor, pas besoin de cloisonnement :
+        # ils voient tout le parc par defaut, quoi qu'on ait coche dans
+        # le formulaire (le champ n'apparait meme pas cote template pour
+        # ces roles-la)
         if new_role != "user":
             assigned_assets = PARC_INFORMATIQUE
 
-        # Utilisation du chiffrement Fernet pour les donnees personnelles (PII)
-        # On utilise une fonction lambda pour alleger le code
+        # Chiffrement des donnees personnelles avant stockage. La lambda
+        # evite de repeter le meme "if cipher else" sur chaque champ
         enc = lambda val: cipher.encrypt(val.encode('utf-8')).decode('utf-8') if cipher else val
 
         new_user_data = {
@@ -771,17 +852,9 @@ def create_account():
         accounts[new_username] = new_user_data
 
         try:
-            with open(JSON_PATH, "w") as f:
-                json.dump(accounts, f, indent=4)
-
-            # Mise a jour du hash de signature apres modification
-            if cipher:
-                with open(JSON_PATH, 'rb') as f:
-                    data = f.read()
-                    # On recalcule le HMAC avec la cle Fernet pour que le script du binome reste content
-                    signature = hmac.new(FERNET_KEY.encode('utf-8'), data, hashlib.sha256).hexdigest()
-                    with open(os.path.join(os.path.dirname(JSON_PATH), ".users_docker.hmac"), 'w') as h:
-                        h.write(signature)
+            # save_accounts ecrit le JSON et recalcule le HMAC dans la
+            # foulee, pas besoin de le refaire a la main ici
+            save_accounts(accounts)
 
             from alertes.envoie_mail import send_email
             sujet = "Bienvenue sur le SOC CyberMonitors - Vos identifiants"
@@ -826,12 +899,12 @@ def machine_action():
     """
     Point d'entree unique pour toutes les actions Docker declenchees
     depuis le dashboard : demarrer, arreter, redemarrer, isoler,
-    reconnecter. Avant d'executer quoi que ce soit, on relit l'etat
-    reel du conteneur et on verifie que l'action demandee a bien un
-    sens dans cet etat (par exemple, impossible d'isoler une machine
-    deja eteinte). Le formulaire cote client desactive deja les
-    boutons qui n'ont pas de sens, mais on ne se fie jamais uniquement
-    a ca : rien n'empeche quelqu'un d'envoyer la requete directement
+    reconnecter. Avant d'executer quoi que ce soit, on relit l'etat reel
+    du conteneur et on verifie que l'action demandee a bien un sens dans
+    cet etat (par exemple, impossible d'isoler une machine deja eteinte).
+    Le formulaire cote client desactive deja les boutons qui n'ont pas de
+    sens, mais on ne se fie jamais uniquement a ca : rien n'empeche
+    quelqu'un d'envoyer la requete directement
     """
     action = request.form.get("action")
     machine_name = request.form.get("machine")
@@ -915,6 +988,101 @@ def machine_action():
         flash("Erreur technique lors de l'execution de l'action.", "danger")
 
     return redirect(request.referrer or url_for("index"))
+
+
+
+
+# ========================================================
+#7. API JSON POUR LE RAFRAICHISSEMENT SANS RECHARGEMENT
+# ========================================================
+# Ces trois routes ne rendent aucun template, elles renvoient juste du
+# JSON. Elles sont interrogees en arriere-plan par le JavaScript des
+# pages (voir layout.html, asset.html, logs.html) pour mettre a jour
+# les points de couleur, le badge de statut, le tableau d'historique et
+# les logs sans recharger toute la page. On reutilise volontairement les
+# memes fonctions que les routes HTML (get_visible_assets,
+# get_container_status...) pour ne jamais avoir deux logiques d'acces
+# qui divergent entre la version HTML et la version JSON
+
+@app.route("/api/nav_status")
+@login_required
+def api_nav_status():
+    """
+    Statut de chaque machine visible par l'utilisateur connecte, plus
+    les crises en cours sur son perimetre. Interroge par toutes les
+    pages (le script est dans layout.html) pour rafraichir les points
+    de couleur de la navigation et la bande d'alertes en haut de page
+    """
+    visible_assets = get_visible_assets(session["user"], session.get("role"))
+    nav_status = {name: get_container_status(name) for name in visible_assets}
+
+    crises = []
+    try:
+        from detetction_de_crises.detection_de_crise import check_all_assets
+        crises = check_all_assets(visible_assets)
+    except Exception as e:
+        print(f"Erreur monitoring (api) : {e}")
+
+    return {"nav_status": nav_status, "crises": crises}
+
+
+@app.route("/api/asset/<name>")
+@login_required
+def api_asset_status(name):
+    """
+    Etat detaille d'une machine : statut Docker et dix dernieres lignes
+    de metriques. Interroge par asset.html pour mettre a jour le badge
+    de statut, activer/desactiver les boutons d'action et rafraichir le
+    tableau d'historique. On regenere aussi les graphes SVG au passage,
+    le front force ensuite leur rechargement avec un parametre anti-cache
+    """
+    visible_assets = get_visible_assets(session["user"], session.get("role"))
+    if name not in visible_assets:
+        abort(403)
+
+    status = get_container_status(name)
+
+    try:
+        from visualisation import update_all_graphs
+        table_name = name.replace("-", "").replace("_", "")
+        update_all_graphs([name])
+        history = get_machine_data(table_name, limit=10)
+    except Exception as e:
+        print(f"Erreur rafraichissement asset (api) : {e}")
+        history = []
+
+    # sqlite3 renvoie des tuples, on les convertit en listes simples
+    # pour que ce soit directement exploitable en JSON cote JS
+    history_serializable = [list(row) for row in history]
+
+    return {"status": status, "history": history_serializable}
+
+
+@app.route("/api/logs")
+@login_required
+def api_logs():
+    """
+    Version JSON de la route /logs, utilisee par le polling en JS pour
+    detecter de nouvelles lignes sans recharger la page. Meme controle
+    d'acces, meme logique de lecture
+    """
+    if session.get("role") not in ["admin", "monitor"]:
+        abort(403)
+
+    logs = []
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    log_files = sorted(glob.glob(os.path.join(LOGS_DIR, "*_security.log")))
+
+    for filepath in log_files:
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            content = "".join(reversed(lines))
+            logs.append({"filename": os.path.basename(filepath), "content": content})
+        except Exception as e:
+            print(f"Erreur lecture log (api) {filepath} : {e}")
+
+    return {"logs": logs}
 
 
 if __name__ == "__main__":
