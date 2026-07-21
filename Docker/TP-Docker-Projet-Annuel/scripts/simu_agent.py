@@ -17,11 +17,11 @@ os_type = os.environ.get('OS_TYPE', 'Inconnu')
 ORDRES_PATH = "/app/data/ordres_c2.json"
 
 def get_hardware_profile(name):
-    if "SRV-WIN-CORE" in name or "win-srv" in name:
+    if "win-srv" in name:
         return {"ram_total_gb": 128.0, "disk_total_gb": 4000.0, "cooling": 0.90, "type": "server_heavy"}
-    elif "SRV-LINUX" in name or "linux-srv" in name:
+    elif "linux-srv" in name:
         return {"ram_total_gb": 64.0, "disk_total_gb": 2000.0, "cooling": 0.85, "type": "server_standard"}
-    elif "WKST-WIN" in name or "win-wkst" in name:
+    elif "win-wkst" in name:
         return {"ram_total_gb": 16.0, "disk_total_gb": 512.0, "cooling": 0.50, "type": "workstation"}
     else:
         return {"ram_total_gb": 8.0, "disk_total_gb": 256.0, "cooling": 0.60, "type": "default"}

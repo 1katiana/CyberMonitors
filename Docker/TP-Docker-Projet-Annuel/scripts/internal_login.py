@@ -101,7 +101,6 @@ C_END = '\033[0m'
 def get_cipher():
     env_key = os.getenv("FERNET_SECRET_KEY")
     
-    # Si la clé ou les variables email manquent, on charge tout le .env du dashboard
     if not env_key or not os.getenv("EMAIL_HOST"):
         try:
             out = subprocess.check_output(
@@ -109,28 +108,14 @@ def get_cipher():
                 stderr=subprocess.DEVNULL
             ).decode('utf-8')
             
-            # On injecte TOUTES les variables trouvées dans os.environ
             for line in out.splitlines():
                 if line.strip() and not line.startswith('#') and '=' in line:
                     k, v = line.split('=', 1)
                     os.environ[k.strip()] = v.strip()
                     
-            # On met à jour env_key au cas où elle vient d'être chargée
             env_key = os.getenv("FERNET_SECRET_KEY")
         except Exception:
             pass
-
-    if not env_key:
-        print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef FERNET_SECRET_KEY introuvable !{C_END}")
-        log_security_event("SYSTEM", "MISSING_ENV_KEY", "CRITICAL", "Fichier .env ou clef de chiffrement absente")
-        time.sleep(4)
-        sys.exit(1)
-        
-    try: 
-        return Fernet(env_key.encode('utf-8'))
-    except Exception as e:
-        print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef de chiffrement invalide ou corrompue.{C_END}")
-        sys.exit(1)
 
     if not env_key:
         print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef FERNET_SECRET_KEY introuvable !{C_END}")
@@ -318,6 +303,14 @@ def check_password_complexity(pwd_str):
     if not any(c in string.punctuation for c in pwd_str): missing.append("un symbole specifique (!@#$%^&*...)")
     return missing
 
+def is_quarantined():
+    try:
+        interfaces = os.listdir('/sys/class/net/')
+        active_interfaces = [i for i in interfaces if i != 'lo' and i != 'tunl0' and i != 'sit0']
+        return len(active_interfaces) == 0
+    except Exception:
+        return False
+
 def start_internal_login():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     json_path = "/app/Data/Users/users_docker.json"
@@ -407,6 +400,21 @@ def start_internal_login():
         role = user_data.get("role", "user")
         assigned = user_data.get("assigned_assets", [])
         
+        in_quarantine = is_quarantined()
+
+        if in_quarantine:
+            if role == "user":
+                log_security_event(user, "QUARANTINE_BLOCK", "CRITICAL", f"Tentative d'acces bloquee : {MACHINE_NAME} en quarantaine")
+                print(f"\n{C_DANGER}[!] ACCES REFUSE : La machine {MACHINE_NAME} est en QUARANTAINE (Isolement reseau).{C_END}")
+                print(f"{C_WARN}L'acces est strictement reserve aux administrateurs et moniteurs.{C_END}")
+                time.sleep(3)
+                sys.exit(1)
+            else:
+                print(f"\n{C_WARN}[!] AVERTISSEMENT : Machine en QUARANTAINE (Isolement reseau actif).{C_END}")
+                print(f"{C_WARN}[!] Acces {role.upper()} autorise pour investigation. L'A2F sera contourne.{C_END}")
+                log_security_event(user, "QUARANTINE_ACCESS", "WARNING", f"Acces investigation {role} sur machine isolee")
+                time.sleep(2)
+
         if role == "user" and MACHINE_NAME not in assigned:
             log_security_event(user, "ACCESS_DENIED", "CRITICAL", f"Tentative d'acces hors perimetre sur {MACHINE_NAME}")
             print(f"\n{C_DANGER}[!] ACCES REFUSE : Vous n'avez pas l'autorisation d'acceder a l'equipement {MACHINE_NAME}.{C_END}")
@@ -525,56 +533,60 @@ def start_internal_login():
                 time.sleep(3)
                 sys.exit(1)
                 
-        user_email = decrypt_val(user_data.get("email"), cipher)
-        if user_email and user_email != "Non renseigne":
-            expected_code = str(secrets.randbelow(900000) + 100000)
-            msg = MIMEText(f"Bonjour,\n\nVotre code MFA a usage unique pour l'acces SSH a la machine {MACHINE_NAME} est : {expected_code}\n\nL'equipe SOC.")
-            msg['Subject'] = f'CyberMonitors - Code MFA pour {MACHINE_NAME}'
-            msg['From'] = os.getenv("EMAIL_USER")
-            msg['To'] = user_email
-            
-            try:
-                host = os.getenv("EMAIL_HOST")
-                port = int(os.getenv("EMAIL_PORT", 587))
-                pwd_app = os.getenv("EMAIL_PASSWORD")
-                mail_user = os.getenv("EMAIL_USER")
+        if not in_quarantine:
+            user_email = decrypt_val(user_data.get("email"), cipher)
+            if user_email and user_email != "Non renseigne":
+                expected_code = str(secrets.randbelow(900000) + 100000)
+                msg = MIMEText(f"Bonjour,\n\nVotre code MFA a usage unique pour l'acces SSH a la machine {MACHINE_NAME} est : {expected_code}\n\nL'equipe SOC.")
+                msg['Subject'] = f'CyberMonitors - Code MFA pour {MACHINE_NAME}'
+                msg['From'] = os.getenv("EMAIL_USER")
+                msg['To'] = user_email
+                
+                try:
+                    host = os.getenv("EMAIL_HOST")
+                    port = int(os.getenv("EMAIL_PORT", 587))
+                    pwd_app = os.getenv("EMAIL_PASSWORD")
+                    mail_user = os.getenv("EMAIL_USER")
 
-                print(f"\n{C_BASE}[*] VERIFICATION MFA : Envoi du code a {user_email}...{C_END}")
-                log_security_event(user, "MFA_CHALLENGE_SENT", "INFO", "Envoi du code MFA par email post-authentification")
+                    print(f"\n{C_BASE}[*] VERIFICATION MFA : Envoi du code a {user_email}...{C_END}")
+                    log_security_event(user, "MFA_CHALLENGE_SENT", "INFO", "Envoi du code MFA par email post-authentification")
 
-                if port == 465:
-                    with smtplib.SMTP_SSL(host, port, timeout=10) as server:
-                        server.login(mail_user, pwd_app)
-                        server.sendmail(mail_user, [user_email], msg.as_string())
+                    if port == 465:
+                        with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                            server.login(mail_user, pwd_app)
+                            server.sendmail(mail_user, [user_email], msg.as_string())
+                    else:
+                        with smtplib.SMTP(host, port, timeout=10) as server:
+                            server.starttls()
+                            server.login(mail_user, pwd_app)
+                            server.sendmail(mail_user, [user_email], msg.as_string())
+                except Exception as e:
+                    print(f"{C_DANGER}[!] Erreur d'envoi du code MFA SMTP : {e}{C_END}")
+                    sys.exit(1)
+
+                attempts = 3
+                mfa_success = False
+                while attempts > 0:
+                    code_in = input(f"{C_WARN}Code MFA recu par email : {C_END}").strip()
+                    if code_in == expected_code:
+                        mfa_success = True
+                        break
+                    attempts -= 1
+                    if attempts > 0:
+                        print(f"{C_DANGER}Code invalide. Essais restants : {attempts}{C_END}")
+                
+                if not mfa_success:
+                    log_security_event(user, "MFA_FAILED", "CRITICAL", "Echec lors de la validation du code MFA par mail")
+                    print(f"{C_DANGER}Echec MFA. Connexion coupee.{C_END}")
+                    sys.exit(1)
                 else:
-                    with smtplib.SMTP(host, port, timeout=10) as server:
-                        server.starttls()
-                        server.login(mail_user, pwd_app)
-                        server.sendmail(mail_user, [user_email], msg.as_string())
-            except Exception as e:
-                print(f"{C_DANGER}[!] Erreur d'envoi du code MFA SMTP : {e}{C_END}")
-                sys.exit(1)
-
-            attempts = 3
-            mfa_success = False
-            while attempts > 0:
-                code_in = input(f"{C_WARN}Code MFA recu par email : {C_END}").strip()
-                if code_in == expected_code:
-                    mfa_success = True
-                    break
-                attempts -= 1
-                if attempts > 0:
-                    print(f"{C_DANGER}Code invalide. Essais restants : {attempts}{C_END}")
-            
-            if not mfa_success:
-                log_security_event(user, "MFA_FAILED", "CRITICAL", "Echec lors de la validation du code MFA par mail")
-                print(f"{C_DANGER}Echec MFA. Connexion coupee.{C_END}")
-                sys.exit(1)
+                    log_security_event(user, "MFA_SUCCESS", "INFO", "Validation MFA reussie")
             else:
-                log_security_event(user, "MFA_SUCCESS", "INFO", "Validation MFA reussie")
+                print(f"{C_DANGER}[!] Adresse email non configuree. MFA impossible. Acces bloque.{C_END}")
+                sys.exit(1)
         else:
-            print(f"{C_DANGER}[!] Adresse email non configuree. MFA impossible. Acces bloque.{C_END}")
-            sys.exit(1)
+            print(f"\n{C_WARN}[*] BYPASS MFA : Authentification SMTP ignoree (Quarantaine).{C_END}")
+            log_security_event(user, "MFA_BYPASSED", "WARNING", "Bypass MFA accorde pour analyse locale en quarantaine")
 
         break 
 
