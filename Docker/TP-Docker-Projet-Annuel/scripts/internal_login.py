@@ -100,18 +100,37 @@ C_END = '\033[0m'
 
 def get_cipher():
     env_key = os.getenv("FERNET_SECRET_KEY")
-    if not env_key:
+    
+    # Si la clé ou les variables email manquent, on charge tout le .env du dashboard
+    if not env_key or not os.getenv("EMAIL_HOST"):
         try:
             out = subprocess.check_output(
                 ["docker", "exec", "monitor_dashboard", "cat", "/infrastructure/Docker/TP-Docker-Projet-Annuel/.env"], 
                 stderr=subprocess.DEVNULL
             ).decode('utf-8')
+            
+            # On injecte TOUTES les variables trouvées dans os.environ
             for line in out.splitlines():
-                if line.strip().startswith('FERNET_SECRET_KEY='):
-                    env_key = line.split('=', 1)[1].strip()
-                    break
+                if line.strip() and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    os.environ[k.strip()] = v.strip()
+                    
+            # On met à jour env_key au cas où elle vient d'être chargée
+            env_key = os.getenv("FERNET_SECRET_KEY")
         except Exception:
             pass
+
+    if not env_key:
+        print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef FERNET_SECRET_KEY introuvable !{C_END}")
+        log_security_event("SYSTEM", "MISSING_ENV_KEY", "CRITICAL", "Fichier .env ou clef de chiffrement absente")
+        time.sleep(4)
+        sys.exit(1)
+        
+    try: 
+        return Fernet(env_key.encode('utf-8'))
+    except Exception as e:
+        print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef de chiffrement invalide ou corrompue.{C_END}")
+        sys.exit(1)
 
     if not env_key:
         print(f"\n{C_DANGER}[!] ERREUR FATALE SYSTEME : Clef FERNET_SECRET_KEY introuvable !{C_END}")
