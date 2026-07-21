@@ -55,9 +55,9 @@ def initialiser_db():
         
         conn.commit()
         conn.close()
-        print("🗄️ Base initialisée : Une table collée par asset.")
+        print(" Base initialisée : Une table collée par asset.")
     except sqlite3.OperationalError as e:
-        print(f"❌ Erreur Initialisation : {e}")
+        print(f" Erreur Initialisation : {e}")
 
 def nettoyer_db():
     try:
@@ -76,7 +76,7 @@ def nettoyer_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ Erreur Nettoyage : {e}")
+        print(f"Erreur Nettoyage : {e}")
 
 def collecter_donnees():
     conn = sqlite3.connect(DB_PATH)
@@ -105,9 +105,9 @@ def collecter_donnees():
                     data['temp'],
                     data['users']
                 ))
-                print(f"✅ {machine} -> Table {table_name} : OK")
+                print(f" {machine} -> Table {table_name} : OK")
         except Exception:
-            print(f"⚠️ {machine} injoignable.")
+            print(f"⚠{machine} injoignable.")
 
     conn.commit()
     conn.close()
